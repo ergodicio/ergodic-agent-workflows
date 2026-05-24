@@ -89,11 +89,11 @@ The `nersc-workflow` skill assumes:
 
 | Thing | Where |
 | --- | --- |
-| Code (synced from your laptop) | `$PSCRATCH/$USER/<repo>/` |
-| Run outputs (checkpoints, plots, logs) | inside that same `$PSCRATCH/$USER/<repo>/` |
+| Code (synced from your laptop) | `$PSCRATCH/<repo>/` |
+| Run outputs (checkpoints, plots, logs) | inside that same `$PSCRATCH/<repo>/` |
 | uv venv | `/global/common/software/m4490/$USER/venvs/<repo>` |
 | uv-managed Pythons | `/global/common/software/m4490/$USER/uv-python/` |
-| uv cache | `$PSCRATCH/$USER/uv-cache/` |
+| uv cache | `$PSCRATCH/uv-cache/` |
 | MLflow credentials | `~/.mlflow_credentials` (mode 600 — fill in after running `bootstrap-nersc.sh`) |
 | Account | `m4490` |
 | Default QOS / constraint / time | `interactive` / `gpu` / `01:00:00` |
@@ -112,7 +112,7 @@ You don't need to put your project in this repo. Just:
 
 1. `cd` into your project on your laptop
 2. Create the venv on Perlmutter (one-time, see `examples/first-run/README.md` for the pattern)
-3. Drop a `.env` with MLflow creds at `$PSCRATCH/$USER/<your-repo>/.env`
+3. Drop a `.env` with MLflow creds at `$PSCRATCH/<your-repo>/.env`
 4. Ask Claude to run it
 
 If your project has different conventions (multi-node, non-interactive QOS, different account), tell Claude in the prompt — the skill exposes those as variables.

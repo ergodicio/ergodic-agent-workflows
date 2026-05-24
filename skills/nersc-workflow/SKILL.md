@@ -15,7 +15,7 @@ The skill is project-agnostic. It assumes the user runs Claude from inside their
 ```
 LOCAL_DIR   = $(pwd)                                           # the repo Claude was launched in
 REPO        = $(basename "$PWD")                               # repo name, used in remote paths
-REMOTE_DIR  = $PSCRATCH/$USER/$REPO/                           # rsynced code + run outputs on NERSC
+REMOTE_DIR  = $PSCRATCH/$REPO/                           # rsynced code + run outputs on NERSC
 VENV        = /global/common/software/m4490/$USER/venvs/$REPO  # uv venv (persistent, fast on compute, read-only from compute nodes)
 ACCOUNT     = m4490
 SSH_HOST    = perlmutter                                       # ssh alias configured by sshproxy
@@ -51,7 +51,7 @@ REPO=$(basename "$PWD")
 ssh perlmutter bash -lc "'
 set -euo pipefail
 VENV=\"/global/common/software/m4490/\$USER/venvs/${REPO}\"
-REMOTE_DIR=\"\$PSCRATCH/\$USER/${REPO}\"
+REMOTE_DIR=\"\$PSCRATCH/${REPO}\"
 
 mkdir -p \"\$(dirname \"\$VENV\")\"
 cd \"\$REMOTE_DIR\"
@@ -109,7 +109,7 @@ rsync -avz --delete \
   --exclude='checkpoints/' --exclude='runinfo/' --exclude='plots/' \
   --exclude='*.ipynb_checkpoints' --exclude='uv.lock' \
   ./ \
-  perlmutter:\$PSCRATCH/$USER/$(basename "$PWD")/
+  perlmutter:\$PSCRATCH/$(basename "$PWD")/
 ```
 
 ### Run on compute node
@@ -121,13 +121,13 @@ The launch sources `/global/common/software/m4490/$USER/ergodic-claude.sh` (inst
 **Single node (default):**
 ```bash
 REPO=$(basename "$PWD")
-ssh -tt perlmutter "salloc --nodes=1 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train srun bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/\$USER/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
+ssh -tt perlmutter "salloc --nodes=1 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train srun bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
 ```
 
 **Multi-node (only if the workload genuinely needs >1 node):**
 ```bash
 REPO=$(basename "$PWD")
-ssh -tt perlmutter "salloc --nodes=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/\$USER/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
+ssh -tt perlmutter "salloc --nodes=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
 ```
 
 **IMPORTANT: multi-node must NOT wrap the user command in `srun`.** Frameworks like Parsl/torchrun internally launch workers via `srun --overlap`; an outer `srun` conflicts and produces interconnect errors. Use `srun` only for single-node; use `bash -c '...'` for multi-node.
@@ -152,7 +152,7 @@ ssh perlmutter "squeue -u \$USER"
 
 **Remote outputs:**
 ```bash
-ssh perlmutter "ls -la \$PSCRATCH/\$USER/$(basename "$PWD")/checkpoints/ 2>/dev/null"
+ssh perlmutter "ls -la \$PSCRATCH/$(basename "$PWD")/checkpoints/ 2>/dev/null"
 ```
 
 For MLflow metrics, switch to the `mlflow-query` skill.
@@ -161,8 +161,8 @@ For MLflow metrics, switch to the `mlflow-query` skill.
 
 ```bash
 REPO=$(basename "$PWD")
-rsync -avz perlmutter:\$PSCRATCH/\$USER/${REPO}/checkpoints/ ./checkpoints/
-rsync -avz perlmutter:\$PSCRATCH/\$USER/${REPO}/plots/       ./plots/
+rsync -avz perlmutter:\$PSCRATCH/${REPO}/checkpoints/ ./checkpoints/
+rsync -avz perlmutter:\$PSCRATCH/${REPO}/plots/       ./plots/
 ```
 
 ### Cancel job
@@ -184,7 +184,7 @@ kill $(pgrep -f "ssh -tt perlmutter.*salloc.*$(basename "$PWD")")
 Destructive — confirm with the user first.
 ```bash
 REPO=$(basename "$PWD")
-ssh perlmutter "rm -rf \$PSCRATCH/\$USER/${REPO}/checkpoints/* \$PSCRATCH/\$USER/${REPO}/plots/*"
+ssh perlmutter "rm -rf \$PSCRATCH/${REPO}/checkpoints/* \$PSCRATCH/${REPO}/plots/*"
 ```
 
 ## Iteration workflow

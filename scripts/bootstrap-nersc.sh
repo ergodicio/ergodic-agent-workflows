@@ -6,8 +6,8 @@
 #   2. Creates the directories the nersc-workflow skill expects:
 #        /global/common/software/m4490/$USER/venvs/      (per-project venvs)
 #        /global/common/software/m4490/$USER/uv-python/  (uv-managed Pythons)
-#        $PSCRATCH/$USER/                                 (working area for synced repos)
-#        $PSCRATCH/$USER/uv-cache/                        (uv download cache, on fast scratch)
+#        $PSCRATCH/                                 (working area for synced repos)
+#        $PSCRATCH/uv-cache/                        (uv download cache, on fast scratch)
 #   3. Writes /global/common/software/m4490/$USER/ergodic-claude.sh with PATH, env vars,
 #      and a cd-hook that points uv at the right per-project venv
 #   4. Adds a single `. /global/common/software/m4490/$USER/ergodic-claude.sh` line to
@@ -44,7 +44,7 @@ echo "[remote] PROJECT_ROOT=${PROJECT_ROOT}"
 
 # 1. Directories (login node can write to global common)
 mkdir -p "${PROJECT_ROOT}/venvs" "${PROJECT_ROOT}/uv-python" \
-         "${PSCRATCH}/${USER}" "${PSCRATCH}/${USER}/uv-cache"
+         "${PSCRATCH}" "${PSCRATCH}/uv-cache"
 echo "[remote] directories ready"
 
 # 2. uv (per-user install via curl; lands in ~/.local/bin/uv by default)
@@ -64,7 +64,7 @@ cat >"${ENV_FILE}" <<EOF
 # uv: binary on PATH, Pythons in global common (persistent), cache on PSCRATCH (fast, OK to be purged)
 export PATH="\${HOME}/.local/bin:\${PATH}"
 export UV_PYTHON_INSTALL_DIR="${PROJECT_ROOT}/uv-python"
-export UV_CACHE_DIR="\${PSCRATCH}/\${USER}/uv-cache"
+export UV_CACHE_DIR="\${PSCRATCH}/uv-cache"
 
 # Where per-project venvs live (read-only from compute nodes — only mutate from login node)
 export ECLAUDE_VENVS="${PROJECT_ROOT}/venvs"
@@ -131,8 +131,8 @@ fi
 echo
 echo "[remote] sanity check:"
 echo "  venvs dir:        ${PROJECT_ROOT}/venvs       $([ -d "${PROJECT_ROOT}/venvs" ] && echo OK)"
-echo "  scratch workdir:  ${PSCRATCH}/${USER}         $([ -d "${PSCRATCH}/${USER}" ] && echo OK)"
-echo "  uv cache:         ${PSCRATCH}/${USER}/uv-cache  $([ -d "${PSCRATCH}/${USER}/uv-cache" ] && echo OK)"
+echo "  scratch workdir:  ${PSCRATCH}         $([ -d "${PSCRATCH}" ] && echo OK)"
+echo "  uv cache:         ${PSCRATCH}/uv-cache  $([ -d "${PSCRATCH}/uv-cache" ] && echo OK)"
 echo "  env file:         ${ENV_FILE}                $([ -f "${ENV_FILE}" ] && echo OK)"
 REMOTE
 
