@@ -8,6 +8,18 @@ allowed-tools: Bash(uv run python3 *)
 
 Query the MLflow tracking server (https://continuum.ergodic.io/experiments/) to check experiments, runs, metrics, and worker status.
 
+## Helper scripts (prefer for common ops)
+
+These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-local.sh`) and can be allowlisted in one rule (`Bash(~/.claude/scripts/ergodic/*)`). Use them for the most common single-run lookups; fall back to inline Python (below) for anything bespoke (filtering, ranges, metric history, custom searches).
+
+| Need | Script |
+| --- | --- |
+| Dump params + metrics + tags for one run | `~/.claude/scripts/ergodic/mlflow-get-params.py <run_id>` |
+| List artifact paths for a run | `~/.claude/scripts/ergodic/mlflow-list-artifacts.sh <run_id> [subpath]` |
+| Download one artifact to `/tmp/` | `~/.claude/scripts/ergodic/mlflow-download-artifact.sh <run_id> <artifact_path>` |
+
+All three resolve dependencies via `uv run --with mlflow --with boto3 --quiet python` and read `MLFLOW_TRACKING_*` + AWS creds from the environment.
+
 ## Setup
 
 All queries use `uv run python3 -c "..."` so dependencies are resolved on the fly. The shell must have these env vars set (see the repo README for where to put them):
@@ -18,19 +30,21 @@ MLFLOW_TRACKING_USERNAME=<user>
 MLFLOW_TRACKING_PASSWORD=<token>
 ```
 
-Standard import (no project-specific patches):
+**Required import** — the tracking server sits behind a reverse proxy that exposes the REST API under `/ajax-api/2.0/` instead of the upstream `/api/2.0/`. Bare `import mlflow` will 404 on every call. Use the shared patch module instead (mirrors `adept/adept/patched_mlflow.py`):
 
 ```python
-import mlflow
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/.claude/scripts/ergodic"))
+import _mlflow_patched as mlflow
 client = mlflow.MlflowClient()
 ```
+
+Every inline Python example below assumes this prelude is included. The three helper scripts already import the patch themselves — no extra work needed when using them.
 
 ## Available operations
 
 ### List experiments
 ```python
-import mlflow
-client = mlflow.MlflowClient()
 for e in client.search_experiments():
     print(f'{e.name:40s}  id={e.experiment_id}')
 ```
@@ -88,9 +102,7 @@ Artifacts on this tracking server are stored in S3. **Use boto3 to download, not
 
 ```python
 import boto3
-import mlflow
 
-client = mlflow.MlflowClient()
 run = client.search_runs('<experiment_id>', max_results=1)[0]
 artifact_uri = run.info.artifact_uri  # e.g. s3://public-ergodic-continuum/<exp>/<run>/artifacts
 

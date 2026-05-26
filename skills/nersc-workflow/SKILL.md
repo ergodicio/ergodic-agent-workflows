@@ -8,6 +8,26 @@ allowed-tools: Bash
 
 Manage the full cycle of syncing, running, monitoring, and iterating on Perlmutter GPU nodes.
 
+## Helper scripts (prefer these)
+
+These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-local.sh`). They each wrap one known-safe `ssh perlmutter` invocation, so the user can allowlist them in one rule (`Bash(~/.claude/scripts/ergodic/*)`) and skip per-command approval. **Always prefer the script over an inline `ssh perlmutter "…"` for these ops** — it's the same command but pre-approved.
+
+| Need | Script |
+| --- | --- |
+| Sync cwd → `$PSCRATCH/<repo>/` | `~/.claude/scripts/ergodic/sync-up.sh` |
+| Allocate interactive GPU | `~/.claude/scripts/ergodic/interactive-gpu.sh [hours] [nodes]` |
+| Submit a batch job | `~/.claude/scripts/ergodic/submit-batch.sh <sbatch-path>` |
+| List your jobs | `~/.claude/scripts/ergodic/squeue.sh` |
+| Job accounting | `~/.claude/scripts/ergodic/sacct.sh <jobid> [jobid2 ...]` |
+| Cancel one job (by id) | `~/.claude/scripts/ergodic/scancel.sh <jobid>` |
+| Cat a remote log | `~/.claude/scripts/ergodic/read-log.sh <relpath>` |
+| Grep a remote log | `~/.claude/scripts/ergodic/grep-log.sh <pattern> <relpath>` |
+| Remote git SHA | `~/.claude/scripts/ergodic/remote-sha.sh [subdir]` |
+
+Operations not covered by the scripts (venv mutation, custom launch, pulling artifacts back, multi-node launch) still go through inline `ssh perlmutter "…"` as shown below — those need the user to see the full command before approving.
+
+**Anti-pattern:** chaining a script with a free-form ssh — `Bash(scripts/sync-up.sh && ssh perlmutter "<something unsafe>")` defeats the allowlist. Invoke scripts standalone, then issue any free-form command as a separate `Bash` call.
+
 ## Conventions
 
 The skill is project-agnostic. It assumes the user runs Claude from inside their working repo on their laptop. Derived paths:
@@ -95,22 +115,11 @@ ssh perlmutter "rm -rf /global/common/software/m4490/\$USER/venvs/${REPO}"
 
 ### Sync local to NERSC
 
-First stamp the current git commit so the training script can log it to MLflow (since `.git/` is excluded from rsync):
-
 ```bash
-git rev-parse HEAD > .git_commit
+~/.claude/scripts/ergodic/sync-up.sh
 ```
 
-Then push local code to Perlmutter, excluding build artifacts and outputs:
-
-```bash
-rsync -avz --delete \
-  --exclude='__pycache__' --exclude='.git/' --exclude='.venv/' \
-  --exclude='checkpoints/' --exclude='runinfo/' --exclude='plots/' \
-  --exclude='*.ipynb_checkpoints' --exclude='uv.lock' \
-  ./ \
-  perlmutter:\$PSCRATCH/$(basename "$PWD")/
-```
+Stamps `.git_commit` (so the training script can log the SHA to MLflow) and rsyncs the cwd to `$PSCRATCH/<repo>/` with the standard exclusions (`__pycache__`, `.git`, `.venv`, `checkpoints/`, `runinfo/`, `plots/`, `*.ipynb_checkpoints`, `uv.lock`).
 
 ### Run on compute node
 
@@ -147,12 +156,23 @@ tail -50 /tmp/nersc_$(basename "$PWD").log
 
 **SLURM queue:**
 ```bash
-ssh perlmutter "squeue -u \$USER"
+~/.claude/scripts/ergodic/squeue.sh
 ```
 
-**Remote outputs:**
+**Job accounting (state, exit code, elapsed):**
+```bash
+~/.claude/scripts/ergodic/sacct.sh <jobid>
+```
+
+**Remote outputs (free-form `ls` — not covered by a script):**
 ```bash
 ssh perlmutter "ls -la \$PSCRATCH/$(basename "$PWD")/checkpoints/ 2>/dev/null"
+```
+
+**Read / grep a remote log file:**
+```bash
+~/.claude/scripts/ergodic/read-log.sh slurm-<jobid>.out
+~/.claude/scripts/ergodic/grep-log.sh 'error\|fail' slurm-<jobid>.out
 ```
 
 For MLflow metrics, switch to the `mlflow-query` skill.
@@ -170,8 +190,8 @@ rsync -avz perlmutter:\$PSCRATCH/${REPO}/plots/       ./plots/
 Identify the job id first, then cancel by id. **Never blanket-cancel by name or by user** — teammates and other concurrent jobs share the account.
 
 ```bash
-ssh perlmutter "squeue -u \$USER"
-ssh perlmutter "scancel <JOB_ID>"
+~/.claude/scripts/ergodic/squeue.sh
+~/.claude/scripts/ergodic/scancel.sh <JOB_ID>
 ```
 
 Kill the local backgrounded ssh:

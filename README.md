@@ -21,7 +21,8 @@ After installing this once, you can run Claude Code from any project repo on you
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
-| `scripts/bootstrap-local.sh` | Installs `uv`, links the skills into `~/.claude/skills/`, checks ssh |
+| `scripts/ops/` | Thin wrappers around safe `ssh perlmutter "…"` invocations (squeue, sacct, scancel, interactive-gpu, sync-up, log read/grep, mlflow get-params/list/download-artifact). Bootstrap symlinks these to `~/.claude/scripts/ergodic/` so they have a stable path and can be allowlisted in one rule |
+| `scripts/bootstrap-local.sh` | Installs `uv`, links the skills into `~/.claude/skills/`, links ops scripts into `~/.claude/scripts/ergodic/`, checks ssh |
 | `scripts/bootstrap-nersc.sh` | Installs `uv` on Perlmutter, creates the venv and scratch directories the skill expects |
 | `examples/first-run/` | A ~30-second torch training job that exercises the entire loop |
 
@@ -63,6 +64,14 @@ export MLFLOW_TRACKING_URI=https://continuum.ergodic.io/experiments/
 export MLFLOW_TRACKING_USERNAME=<your-username>
 export MLFLOW_TRACKING_PASSWORD=<your-token>
 ```
+
+For fewer permission prompts, add this to your Claude Code settings allowlist so the ops scripts are pre-approved:
+
+```
+Bash(~/.claude/scripts/ergodic/*)
+```
+
+The scripts are intentionally narrow wrappers — each one runs a single known-safe ssh command, so blanket-allowing them is safe. Free-form `ssh perlmutter "…"` calls (used in the skills for venv mutation, custom launches, etc.) still go through normal per-command approval.
 
 Open a new shell to pick those up, then prove it all works with the demo:
 
