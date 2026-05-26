@@ -15,7 +15,9 @@ These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-loc
 | Need | Script |
 | --- | --- |
 | Sync cwd → `$PSCRATCH/<repo>/` | `~/.claude/scripts/ergodic/sync-up.sh` |
-| Allocate interactive GPU | `~/.claude/scripts/ergodic/interactive-gpu.sh [hours] [nodes]` |
+| Allocate interactive GPU (1 GPU) | `~/.claude/scripts/ergodic/interactive-gpu.sh [hours] [nodes]` |
+| Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.claude/scripts/ergodic/interactive-gpu-node.sh [hours] [nodes]` |
+| Allocate interactive CPU node (1-4 nodes) | `~/.claude/scripts/ergodic/interactive-cpu.sh [hours] [nodes]` |
 | Submit a batch job | `~/.claude/scripts/ergodic/submit-batch.sh <sbatch-path>` |
 | List your jobs | `~/.claude/scripts/ergodic/squeue.sh` |
 | Job accounting | `~/.claude/scripts/ergodic/sacct.sh <jobid> [jobid2 ...]` |
