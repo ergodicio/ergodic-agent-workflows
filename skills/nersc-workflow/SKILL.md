@@ -181,10 +181,17 @@ For MLflow metrics, switch to the `mlflow-query` skill.
 
 ### Pull results back
 
+Resolve `$PSCRATCH` first, then rsync to/from the absolute path. Don't put a
+literal `\$PSCRATCH` in an rsync remote arg expecting the remote shell to expand
+it: rsync 3.2.4+ backslash-escapes shell metacharacters (incl. `$`) in remote
+paths as injection hardening, so it's taken literally and rsync looks under
+`~/$PSCRATCH/...`. (This is why `sync-up.sh` resolves the path up front too.)
+
 ```bash
 REPO=$(basename "$PWD")
-rsync -avz perlmutter:\$PSCRATCH/${REPO}/checkpoints/ ./checkpoints/
-rsync -avz perlmutter:\$PSCRATCH/${REPO}/plots/       ./plots/
+REMOTE_SCRATCH=$(ssh perlmutter 'echo $PSCRATCH')
+rsync -avz "perlmutter:${REMOTE_SCRATCH}/${REPO}/checkpoints/" ./checkpoints/
+rsync -avz "perlmutter:${REMOTE_SCRATCH}/${REPO}/plots/"       ./plots/
 ```
 
 ### Cancel job
