@@ -123,7 +123,35 @@ ssh perlmutter "rm -rf /global/common/software/m4490/\$USER/venvs/${REPO}"
 
 Stamps `.git_commit` (so the training script can log the SHA to MLflow) and rsyncs the cwd to `$PSCRATCH/<repo>/` with the standard exclusions (`__pycache__`, `.git`, `.venv`, `checkpoints/`, `runinfo/`, `plots/`, `*.ipynb_checkpoints`, `uv.lock`).
 
-### Run on compute node
+## Choosing a run pattern
+
+Two patterns; pick deliberately.
+
+| Pattern | When to use | How |
+| --- | --- | --- |
+| **Persistent allocation + attach** (preferred for iterative dev) | Running a sim, looking at output, tweaking config, running again. Multiple commands in the same allocation. Live debugging. | `interactive-gpu.sh` → `ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"` → work on the compute node directly |
+| **One-shot fire-and-forget** | Automated launches Claude is going to monitor by tailing a log. Allocation lifetime = command lifetime. | `ssh -tt perlmutter "salloc … srun bash -c '…'"` — see "Run on compute node" below |
+
+For **parameter scans / sweeps**, neither shell pattern is the right tool — use the parsl + LocalProvider pattern documented in the `adept-run` skill. parsl launches workers inside whichever allocation you've already got (laptop or NERSC), so the same script works in both. Do **not** loop a shell over configs.
+
+### Attach to a persistent interactive allocation (preferred for dev iteration)
+
+After allocating with `~/.claude/scripts/ergodic/interactive-gpu.sh <hrs>` (which uses `salloc --no-shell` and prints `<JOBID>`):
+
+```bash
+ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"
+# now on the compute node:
+cd $PSCRATCH/<repo>
+source /global/common/software/m4490/$USER/venvs/<repo>/bin/activate
+source /global/common/software/m4490/$USER/ergodic-claude.sh
+uv run run.py --cfg <config-path-no-yaml>     # or whatever the project's launch is
+```
+
+The allocation persists until its walltime expires or you `scancel` it — you can exit the tty and re-attach with the same `ssh -tt … srun --jobid=<JOBID> --pty bash` to run another command.
+
+**Same compute-node rules apply:** no `uv sync` / `uv pip install` / `uv venv` inside the attached shell — global common is read-only here. Exit, mutate on the login node, re-attach.
+
+### Run on compute node (one-shot, automated launches)
 
 Allocate an interactive node and run training. Output is captured to a local log and backgrounded so the user can monitor it.
 
