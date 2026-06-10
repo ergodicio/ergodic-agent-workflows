@@ -17,6 +17,7 @@ These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-loc
 | Sync cwd → `$PSCRATCH/<repo>/` | `~/.claude/scripts/ergodic/sync-up.sh` |
 | Allocate interactive GPU (1 GPU) | `~/.claude/scripts/ergodic/interactive-gpu.sh [hours] [nodes]` |
 | Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.claude/scripts/ergodic/interactive-gpu-node.sh [hours] [nodes]` |
+| Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.claude/scripts/ergodic/interactive-shared.sh [gpus] [hours]` |
 | Allocate interactive CPU node (1-4 nodes) | `~/.claude/scripts/ergodic/interactive-cpu.sh [hours] [nodes]` |
 | Submit a batch job | `~/.claude/scripts/ergodic/submit-batch.sh <sbatch-path>` |
 | List your jobs | `~/.claude/scripts/ergodic/squeue.sh` |
@@ -142,6 +143,13 @@ ssh -tt perlmutter "salloc --nodes=4 --qos=interactive --time=01:00:00 --constra
 ```
 
 **IMPORTANT: multi-node must NOT wrap the user command in `srun`.** Frameworks like Parsl/torchrun internally launch workers via `srun --overlap`; an outer `srun` conflicts and produces interconnect errors. Use `srun` only for single-node; use `bash -c '...'` for multi-node.
+
+**Running on a parked allocation (e.g. an `interactive-shared.sh` slice):** the `interactive-*.sh` scripts use `salloc --no-shell`, which leaves the allocation sitting in the queue. To run on it, read its job id from `squeue` and `srun --jobid=<id> --overlap` into it — **do not** issue a fresh `salloc` (that allocates a *second* node and bypasses the shared slice you just reserved).
+```bash
+REPO=$(basename "$PWD")
+JOBID=<id from squeue>
+ssh perlmutter "srun --jobid=${JOBID} --overlap bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'"
+```
 
 Notes:
 - `python -u` for unbuffered output (so `tail -f` of the log is responsive).
