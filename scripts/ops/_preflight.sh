@@ -5,8 +5,8 @@
 
 _ec_marker="/tmp/.ec-ssh-ok-${EC_SSH_HOST}-$(id -u)"
 if [ -f "$_ec_marker" ]; then
-    _ec_mtime=$(stat -f %m "$_ec_marker" 2>/dev/null \
-             || stat -c %Y "$_ec_marker" 2>/dev/null \
+    _ec_mtime=$(stat -c %Y "$_ec_marker" 2>/dev/null \
+             || stat -f %m "$_ec_marker" 2>/dev/null \
              || echo 0)
     _ec_age=$(( $(date +%s) - _ec_mtime ))
     if [ "$_ec_age" -lt 3600 ]; then
