@@ -19,6 +19,19 @@ if git rev-parse HEAD >/dev/null 2>&1; then
     git rev-parse HEAD > .git_commit
 fi
 
+# Resolve $PSCRATCH on the remote and rsync to an absolute path.
+# We can't let rsync's remote arg carry a literal "\$PSCRATCH" for the remote
+# shell to expand: rsync 3.2.4+ backslash-escapes shell metacharacters (incl.
+# `$`) in remote paths as injection hardening, so "\$PSCRATCH" is taken
+# literally and rsync tries to mkdir "~/\$PSCRATCH/<repo>". (--old-args turns
+# the escaping off, but that disables *all* the hardening.) Resolving the path
+# up front via ssh is version-proof.
+REMOTE_SCRATCH="$(ssh "${EC_SSH_HOST}" 'echo "$PSCRATCH"')"
+if [ -z "$REMOTE_SCRATCH" ]; then
+    echo "[sync-up] could not resolve \$PSCRATCH on ${EC_SSH_HOST}" >&2
+    exit 1
+fi
+
 rsync -avz --delete \
     --exclude='__pycache__' \
     --exclude='.git/' \
@@ -29,4 +42,4 @@ rsync -avz --delete \
     --exclude='*.ipynb_checkpoints' \
     --exclude='uv.lock' \
     ./ \
-    "${EC_SSH_HOST}:\$PSCRATCH/${REPO}/"
+    "${EC_SSH_HOST}:${REMOTE_SCRATCH}/${REPO}/"
