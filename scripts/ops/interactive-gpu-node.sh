@@ -28,7 +28,7 @@ fi
 ssh "$EC_SSH_HOST" "salloc --no-shell \
   --job-name ${REPO} \
   --nodes ${NODES} \
-  --gpus-per-node 4 \
+  --gpus-per-node ${EC_GPUS_PER_NODE} \
   --qos ${EC_QOS} \
   --time ${HOURS}:00:00 \
   --constraint gpu \

@@ -135,6 +135,14 @@ Two patterns; pick deliberately.
 
 For **parameter scans / sweeps**, neither shell pattern is the right tool — use the parsl + LocalProvider pattern documented in the `adept-run` skill. parsl launches workers inside whichever allocation you've already got (laptop or NERSC), so the same script works in both. Do **not** loop a shell over configs.
 
+**Launching a parsl scan on a compute node — activate the venv; don't bypass it.** `source $VENV/bin/activate` then `python scan.py` (and put the same `source …/activate` in the parsl `worker_init`). Two ways to get this wrong, both seen in practice:
+- `$VENV/bin/python scan.py` (bare interpreter path, no activation) → parsl's HighThroughputExecutor launches its `interchange.py` helper off `PATH`, and `$VENV/bin` isn't on `PATH`, so the run dies seconds in with `FileNotFoundError: 'interchange.py'`.
+- `uv run … python scan.py` → `uv run` re-resolves against the (often stale) `uv.lock` and tries to sync the project env, but the venv lives on read-only `/global/common/...` on compute nodes and is shared with concurrent runs. Best case it errors; worst case it disturbs other jobs.
+
+Activation is PATH-only (sets `PATH`/`VIRTUAL_ENV`, no install/sync), so it fixes the `interchange.py` lookup without touching the shared venv.
+
+**Sharding one run across multiple GPUs per node (vs. one run per GPU):** set the HTEX `available_accelerators` to *grouped* device lists — `["0,1,2,3"]` gives one worker that owns all 4 GPUs (so `jax.devices()==4` and the solver can shard across them), whereas `available_accelerators=4` gives four single-GPU workers. For multi-node, pair this with `LocalProvider(nodes_per_block=N, max_blocks=1, launcher=SrunLauncher(overrides="--ntasks-per-node 1 --gpus-per-node 4"))` so a single srun starts one worker pool per node (`nodes_per_block=1 + max_blocks=N` makes blocks share `$SLURM_JOB_NAME` and clobber each other's cmd script). The sbatch/salloc body runs `python scan.py` directly — **not** wrapped in an outer `srun`, which would collide with parsl's internal srun.
+
 ### Attach to a persistent interactive allocation (preferred for dev iteration)
 
 After allocating with `~/.claude/scripts/ergodic/interactive-gpu.sh <hrs>` (which uses `salloc --no-shell` and prints `<JOBID>`):
