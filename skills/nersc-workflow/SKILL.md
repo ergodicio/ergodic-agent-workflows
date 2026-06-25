@@ -166,16 +166,18 @@ Allocate an interactive node and run training. Output is captured to a local log
 
 The launch sources `/global/common/software/m4490/$USER/ergodic-claude.sh` (installed by `bootstrap-nersc.sh`) to get MLflow env vars + credentials, then activates the project venv, then runs python. **No `uv` mutations happen here** — the venv was prepared on the login node by the previous step.
 
+**`salloc` here must request `--gpus-per-node` explicitly — `--constraint=gpu` alone is not enough.** Slurm draws GPU device visibility at two different levels: the **job** (the `salloc` allocation itself) and the **step** (each `srun` invocation run inside it), and GRES bound to one isn't automatically bound to the other. A plain interactive `salloc` shell — run *without* `--no-shell` and with no `srun` wrapping your command — executes your commands at the job level and sees all 4 GPUs on an exclusive node with no extra flag, since there's no separate step boundary involved. But the one-shot `salloc ... srun bash -c '...'` commands below run your training command as an `srun` **job step** (every launch path in this skill goes through `srun`), and Slurm builds a step's GPU device cgroup from the GRES requested *for that step*, not from the node's exclusivity. `--constraint=gpu` only steers node *selection* — it requests no GRES at all — so without `--gpus-per-node`, the step gets `CUDA_ERROR_NO_DEVICE` even though `squeue`/`AllocTRES` shows the node's A100s allocated to the job. `interactive-gpu.sh`/`interactive-gpu-node.sh` already pass `--gpus-per-node ${EC_GPUS_PER_NODE}` for the same reason — the one-shot commands below build their own `salloc` call directly, so they need the flag too.
+
 **Single node (default):**
 ```bash
 REPO=$(basename "$PWD")
-ssh -tt perlmutter "salloc --nodes=1 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train srun bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
+ssh -tt perlmutter "salloc --nodes=1 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train srun bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
 ```
 
 **Multi-node (only if the workload genuinely needs >1 node):**
 ```bash
 REPO=$(basename "$PWD")
-ssh -tt perlmutter "salloc --nodes=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
+ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
 ```
 
 **IMPORTANT: multi-node must NOT wrap the user command in `srun`.** Frameworks like Parsl/torchrun internally launch workers via `srun --overlap`; an outer `srun` conflicts and produces interconnect errors. Use `srun` only for single-node; use `bash -c '...'` for multi-node.
