@@ -15,6 +15,7 @@ This skill encodes the team's defaults for invoking the [adept](https://github.c
 | Run one simulation from a YAML config | `uv run run.py --cfg <path/without/.yaml>` |
 | Run one simulation from Python (e.g. inside a script) | `from adept import ergoExo` |
 | Parameter scan / sweep | `parsl` with `LocalProvider` |
+| Train / optimize trainable modules through the solver | Hybrid parent/child loop — cached `filter_jit(mod.vg)` + periodic fresh-ergoExo child run |
 
 Anything else (direct `diffrax` calls, importing `adept.pic1d.BasePIC1D` directly, hand-rolled `Stepper` loops) is **not the default** — see "When to deviate" below.
 
@@ -146,6 +147,75 @@ Then point the user at `mlflow-query` to compare the resulting runs.
 For scans larger than fits in one node, the user has moved beyond LocalProvider — tell them and ask before swapping to `SlurmProvider`.
 
 ---
+
+## Differentiable training / optimization loops (hybrid parent/child)
+
+When you're **optimizing** trainable modules end-to-end *through* the solver — fitting driver
+parameters, a learned closure, an initial condition — by gradient descent, do **not** call a
+fresh `ergoExo` (or re-`setup`) per optimizer step. Each fresh `ergoExo` builds a new
+`ADEPTModule`, so `eqx.filter_jit` sees a new function identity and **recompiles the entire
+solver graph every step**. For a cheap fluid solve that's tolerable; for a multi-ps Vlasov/PIC
+solve a recompile per step dominates wall-clock and wastes the run.
+
+The right shape is a **hybrid** with two MLflow tiers:
+
+- **PARENT run** = the whole optimization campaign. Log per-step scalars (loss, grad-norm, the
+  trainable params) and the **optimizer checkpoint** (model + opt_state + step, as an `.eqx`
+  artifact) here, with `step=`.
+- **FAST PATH (every step)** — call the **cached** `eqx.filter_jit(adept_module.vg)` *directly*.
+  Compiled once, reused every step: no new `ergoExo`, no new run, no recompile. Update the
+  optax state, log scalars to the parent.
+- **SLOW PATH (every N steps)** — spin up a **fresh** `ergoExo(mlflow_nested=True,
+  parent_run_id=parent)` and call `.val_and_grad(...)`. This logs a nested **child run** with
+  the full solver artifacts (post-process plots, f(v), …) and a val/grad **cross-check** of the
+  fast path. It recompiles (new module) — that's the price of the visibility run, so do it
+  occasionally (every 10–50 steps), not every step.
+
+The two paths share ONE objective: the `ADEPTModule` subclass implements
+`vg(trainable_modules, args) -> ((val, run_output), grad)` (the base `vg` raises
+NotImplementedError; see `_tf1d/modules.py`). `ergoExo.val_and_grad` internally calls
+`filter_jit(self.adept_module.vg)`, so the same `vg` backs both the direct fast path and the
+child-run slow path (DRY).
+
+```python
+import mlflow, optax, equinox as eqx, jax.numpy as jnp
+from adept import ergoExo
+
+mlflow.set_experiment(cfg["mlflow"]["experiment"])
+parent_id = read_sidecar() if resuming else None          # persist to reopen the SAME parent
+with mlflow.start_run(run_id=parent_id, run_name=f"{cfg['mlflow']['run']}-opt") as parent:
+    parent_id = parent.info.run_id; write_sidecar(parent_id)
+    exo = ergoExo(mlflow_nested=True, parent_run_id=parent_id)   # setup logs a nested child
+    modules = exo.setup(cfg=cfg, adept_module=MyModule)
+    vg_jit = eqx.filter_jit(exo.adept_module.vg)                 # COMPILE ONCE, reuse
+    opt = optax.adam(lr); opt_state = opt.init(eqx.filter(modules, eqx.is_inexact_array))
+    if resuming:                                                # restore (modules, opt_state, step)
+        modules, opt_state, step0 = eqx.tree_deserialise_leaves(ckpt, (modules, opt_state, jnp.array(0)))
+    for step in range(int(step0), nsteps):
+        (val, _out), grad = vg_jit(modules, args)               # FAST PATH — no new run/compile
+        mlflow.log_metrics({"loss": float(val), ...}, step=step)
+        updates, opt_state = opt.update(grad, opt_state, modules)
+        modules = eqx.apply_updates(modules, updates)
+        eqx.tree_serialise_leaves(ckpt, (modules, opt_state, jnp.array(step + 1)))
+        mlflow.log_artifact(ckpt)                               # durable opt ckpt on the PARENT
+        if step % vis_every == 0:                               # SLOW PATH — fresh ergoExo child
+            exo_v = ergoExo(mlflow_nested=True, parent_run_id=parent_id)
+            exo_v.setup(cfg=cfg, adept_module=MyModule)
+            exo_v.val_and_grad(modules, {**exo_v.adept_module.args, **extra})
+```
+
+**Checkpoint + resume across queued jobs.** Serialize `(modules, opt_state, step)` with
+`eqx.tree_serialise_leaves` every step (it's tiny — KB). Keep a **local** copy for fast resume
+*and* `mlflow.log_artifact` it onto the parent for durability/visibility (resume elsewhere via
+`mlflow.artifacts.download_artifacts(run_id=parent, artifact_path=..., dst_path=...)` then
+`tree_deserialise_leaves`). Persist the **parent run id** (a sidecar file, or an MLflow tag) so
+a resumed/resubmitted job reopens the SAME parent with `mlflow.start_run(run_id=parent_id)` and
+all steps stay under one campaign. Put local checkpoints in a `sync-up`-excluded dir
+(`checkpoints/`) so `rsync --delete` doesn't wipe them.
+
+Reference implementations: `adept/_tf1d/train_damping.py` (the original parent/child + grad
+artifact pattern) and `kinetic-srs/sims/vlasov-coarsegrain-closure/train.py` (the hybrid
+fast/slow loop above).
 
 ## When to deviate from these defaults
 
