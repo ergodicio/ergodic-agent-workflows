@@ -177,10 +177,35 @@ ssh -tt perlmutter "salloc --nodes=1 --gpus-per-node=4 --qos=interactive --time=
 **Multi-node (only if the workload genuinely needs >1 node):**
 ```bash
 REPO=$(basename "$PWD")
-ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
+ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=m4490 --job-name=${REPO}-train srun --overlap --nodes=1 --ntasks=1 bash -c 'source /global/common/software/m4490/\$USER/ergodic-claude.sh && source /global/common/software/m4490/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
 ```
 
-**IMPORTANT: multi-node must NOT wrap the user command in `srun`.** Frameworks like Parsl/torchrun internally launch workers via `srun --overlap`; an outer `srun` conflicts and produces interconnect errors. Use `srun` only for single-node; use `bash -c '...'` for multi-node.
+**IMPORTANT: multi-node wraps the driver in exactly `srun --overlap --nodes=1 --ntasks=1` — not a plain `srun`.** A plain outer `srun` (no flags) runs the command as an N-node job step and conflicts with the internal `srun --overlap` that Parsl/torchrun use to place workers (interconnect errors). The `--overlap --nodes=1 --ntasks=1` form instead runs the *driver* as a 1-task step on the head compute node, and the framework's internal worker srun still lays out across all nodes with full GPU pinning. Verified 2026-07-03 (Perlmutter, parsl HTEX + SrunLauncher): driver step `.0` on the head node, worker step `.1` spanning all nodes, workers GPU-pinned on every node, and a 1.5 h 8-run production scan completed with results byte-identical to its login-driver baseline.
+
+**Why the driver goes on a compute node (and why you still detach):** an unwrapped `bash -c '…'` body executes on the login/submit node, exposed to two independent killers: (a) **SIGHUP** when your ssh drops or the login node reboots — the ~20–30 min failure people hit on long scans; (b) **SIGTERM from NERSC login-node process policing**, which reaps busy login-resident processes at random (observed: a healthy 12-GPU scan torn down at 38 min while identical launches elsewhere survived 2.5 h+; `setsid` does not block SIGTERM). The `srun --overlap -N1 -n1` wrapper removes the policing target: the only login-resident piece left is the near-idle `salloc` client. **Still detach the launch** (`setsid …` / `nohup …`) — salloc itself dies with your ssh session otherwise (SIGHUP). For a run that may exceed the 4 h interactive cap, use **`sbatch`** instead (below).
+
+### Multi-node alternative: sbatch (no detach)
+
+This is an **alternative** to detaching the multi-node one-shot, not a replacement: for runs **≤ 4 h, prefer the detached one-shot** (interactive, faster to schedule; with the `srun --overlap -N1 -n1` driver wrapper it is equally login-independent apart from the idle salloc client). Reach for `sbatch` when a run may exceed the 4 h interactive cap. **`sbatch` cannot use the interactive QOS** — Perlmutter rejects it at submission (`sbatch: error: Cannot submit batch jobs to gpu_interactive_ss11`, tested 2026-07-03) — so batch jobs ride the `regular` queue (slower to schedule). A batch job runs its script on a **compute node under SLURM**, with nothing tied to your terminal — so ssh drops and login reboots can't kill it, and no `setsid` / `nohup` is needed. The parsl part is unchanged: the script still runs `python -u scan.py` with **no outer srun** (the sbatch script already executes on the head compute node, so the driver needs no placement wrapper there; parsl's `SrunLauncher` does the internal `srun --overlap`).
+
+Copy the template `skills/nersc-workflow/run-scan.sbatch` into the campaign next to its `scan.py`, set `DRIVER`, then submit + monitor:
+
+```bash
+~/.claude/scripts/ergodic/submit-batch.sh sims/<campaign>/run-scan.sbatch
+~/.claude/scripts/ergodic/squeue.sh
+~/.claude/scripts/ergodic/read-log.sh workdir/<repo>-<jobid>.out
+```
+
+The template hardcodes `--account=m4490_g`, `--qos=regular` (the interactive QOS rejects sbatch — see above), `--nodes=4 --gpus-per-node=4`, and `--output=workdir/%x-%j.out` (`workdir/` survives `sync-up`'s `--delete`). `submit-batch.sh` does `mkdir -p workdir` first so the log can open.
+
+**Detach vs sbatch — both stay fully inspectable** (`squeue` / `sacct` / `read-log` / `srun --jobid=<id> --overlap` attach all work either way):
+
+| | Detached salloc one-shot (srun-wrapped driver) | sbatch |
+| --- | --- | --- |
+| Pros | Interactive QOS, nodes now (no batch queue); fast dev iteration; driver on a compute node (policing/reboot-immune) | Compute-node driver — immune to ssh drops *and* login reboots; no detach ceremony; `regular` lifts the interactive walltime cap |
+| Cons | Idle `salloc` client still lives on the login node (dies if the login node itself reboots); manual `setsid`/`disown` ceremony, easy to fumble | `regular` queue only (interactive QOS rejects sbatch) — not instant; less live/interactive |
+
+Rule of thumb: **multi-node ≤ 4 h → detached one-shot with the `srun --overlap -N1 -n1` driver wrapper (preferred); a run that may exceed 4 h → `sbatch` on `regular`.**
 
 **Running on a parked allocation (e.g. an `interactive-shared.sh` slice):** the `interactive-*.sh` scripts use `salloc --no-shell`, which leaves the allocation sitting in the queue. To run on it, read its job id from `squeue` and `srun --jobid=<id> --overlap` into it — **do not** issue a fresh `salloc` (that allocates a *second* node and bypasses the shared slice you just reserved).
 ```bash

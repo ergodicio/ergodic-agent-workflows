@@ -20,4 +20,9 @@ fi
 REPO="$(basename "$PWD")"
 SBATCH_REL="$1"
 
-ssh "$EC_SSH_HOST" "cd \$PSCRATCH/${REPO} && sbatch ${SBATCH_REL}"
+# -J ${REPO}: name the job after the repo (matches the interactive-*.sh helpers and
+#   keeps squeue identifiable), instead of the script's own --job-name — so this works
+#   for any project, not just one. Overrides any --job-name in the sbatch script.
+# mkdir -p workdir so an sbatch script using `--output=workdir/...` can open its log
+#   (workdir/ is excluded from sync-up's rsync, so it may not exist yet on a fresh repo).
+ssh "$EC_SSH_HOST" "cd \$PSCRATCH/${REPO} && mkdir -p workdir && sbatch -J ${REPO} ${SBATCH_REL}"
