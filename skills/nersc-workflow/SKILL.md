@@ -20,6 +20,7 @@ These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-loc
 | Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.claude/scripts/ergodic/interactive-shared.sh [gpus] [hours]` |
 | Allocate interactive CPU node (1-4 nodes) | `~/.claude/scripts/ergodic/interactive-cpu.sh [hours] [nodes]` |
 | Submit a batch job | `~/.claude/scripts/ergodic/submit-batch.sh <sbatch-path>` |
+| Commit-pinned isolated run (checkout SHA → own dir → sbatch) | `~/.claude/scripts/ergodic/launch-pinned.sh [opts] <cfg…>` |
 | List your jobs | `~/.claude/scripts/ergodic/squeue.sh` |
 | Job accounting | `~/.claude/scripts/ergodic/sacct.sh <jobid> [jobid2 ...]` |
 | Cancel one job (by id) | `~/.claude/scripts/ergodic/scancel.sh <jobid>` |
@@ -124,14 +125,17 @@ ssh perlmutter "rm -rf /global/common/software/m4490/\$USER/venvs/${REPO}"
 
 Stamps `.git_commit` (so the training script can log the SHA to MLflow) and rsyncs the cwd to `$PSCRATCH/<repo>/` with the standard exclusions (`__pycache__`, `.git`, `.venv`, `checkpoints/`, `runinfo/`, `plots/`, `*.ipynb_checkpoints`, `uv.lock`).
 
+> **Shared-dir hazard.** `sync-up.sh` rsyncs into a *single* per-repo dir (`$PSCRATCH/<repo>/`), and the venv's editable install points there. Switch branches locally and re-sync and that dir is **overwritten** — silently breaking any job still queued or running against the old tree (its config/solver vanish → the job dies at startup). For anything that must survive concurrent branches or long queue waits (production batch jobs, multi-day runs), use **commit-pinned isolated runs** (`launch-pinned.sh`, below) instead.
+
 ## Choosing a run pattern
 
-Two patterns; pick deliberately.
+Three patterns; pick deliberately.
 
 | Pattern | When to use | How |
 | --- | --- | --- |
 | **Persistent allocation + attach** (preferred for iterative dev) | Running a sim, looking at output, tweaking config, running again. Multiple commands in the same allocation. Live debugging. | `interactive-gpu.sh` → `ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"` → work on the compute node directly |
 | **One-shot fire-and-forget** | Automated launches Claude is going to monitor by tailing a log. Allocation lifetime = command lifetime. | `ssh -tt perlmutter "salloc … srun bash -c '…'"` — see "Run on compute node" below |
+| **Commit-pinned isolated run** (preferred for production / long-queue batch) | A run that must be reproducible and immune to later branch switches — production sweeps, multi-hour/day batch jobs, anything you'll queue then walk away from. | `launch-pinned.sh` — see below |
 
 For **parameter scans / sweeps**, neither shell pattern is the right tool — use the parsl + LocalProvider pattern documented in the `adept-run` skill. parsl launches workers inside whichever allocation you've already got (laptop or NERSC), so the same script works in both. Do **not** loop a shell over configs.
 
@@ -140,6 +144,40 @@ For **parameter scans / sweeps**, neither shell pattern is the right tool — us
 - `uv run … python scan.py` → `uv run` re-resolves against the (often stale) `uv.lock` and tries to sync the project env, but the venv lives on read-only `/global/common/...` on compute nodes and is shared with concurrent runs. Best case it errors; worst case it disturbs other jobs.
 
 Activation is PATH-only (sets `PATH`/`VIRTUAL_ENV`, no install/sync), so it fixes the `interchange.py` lookup without touching the shared venv.
+
+### Commit-pinned isolated runs (`launch-pinned.sh`) — production / long-queue jobs
+
+`sync-up.sh` + attach is ideal for fast iteration, but every run shares one mutable dir (`$PSCRATCH/<repo>/`) and the venv's editable install points into it. Switch branches locally, re-sync, and that dir is overwritten — a job still queued or running against the old tree dies at startup (config/solver gone). This bites hardest for batch jobs that sit in the queue for hours while you move on to other work.
+
+`launch-pinned.sh` removes the shared mutable state:
+
+- checks out a **specific commit** into its own dir `$PSCRATCH/<repo>-runs/<sha>/` (bare mirror + `git worktree`, via a read-only deploy key) — immutable, never rsynced over;
+- imports the project package from that tree via `PYTHONPATH`, so it neither depends on nor disturbs the shared venv's editable link (concurrent runs of different commits don't collide);
+- generates + submits one sbatch per config from the isolated dir; logs land in `<sha>/logs/` and are never swept.
+
+```bash
+# from inside the repo on the laptop:
+~/.claude/scripts/ergodic/launch-pinned.sh [options] <cfg1> [cfg2 ...]
+#   <cfgN>       config path relative to repo root, WITHOUT .yaml
+#   --sha <sha>  commit to deploy (default: local HEAD; must be pushed)
+#   --nodes N    nodes per job (default 1)
+#   --time T     walltime HH:MM:SS (default 04:00:00)
+#   --qos Q      SLURM QOS (default regular)
+#   --gpus N     GPUs per node (default 4)
+#   --multinode  set PIC2D_MULTINODE=1 + one task PER GPU (jax.distributed)
+#   --dry-run    print the generated sbatch without submitting
+```
+
+**One-time prereq — read-only deploy key.** Perlmutter can't clone a private GitHub repo out of the box (no `gh`, no SSH key). Generate a key on Perlmutter and add its public half as a repo deploy key (read-only):
+
+```bash
+ssh perlmutter "ssh-keygen -t ed25519 -f ~/.ssh/<repo>-deploy -N '' -C '<repo>-deploy@perlmutter'; cat ~/.ssh/<repo>-deploy.pub"
+gh repo deploy-key add <pubkey-file> --title "perlmutter-<repo> (read-only)" --repo <owner>/<repo>
+```
+
+The launcher uses `GIT_SSH_COMMAND` with `~/.ssh/<repo>-deploy` for all git ops.
+
+**Deps.** The shared venv still provides third-party deps (adept, jax, …); only the project package comes from the pinned tree (via `PYTHONPATH`). If a commit adds a dependency, install it into the shared venv on the login node once — that's additive and won't repoint the editable link. Do **not** `uv pip install -e` the pinned tree into the shared venv; that reintroduces the shared-state hazard.
 
 **Sharding one run across multiple GPUs per node (vs. one run per GPU):** set the HTEX `available_accelerators` to *grouped* device lists — `["0,1,2,3"]` gives one worker that owns all 4 GPUs (so `jax.devices()==4` and the solver can shard across them), whereas `available_accelerators=4` gives four single-GPU workers. For multi-node, pair this with `LocalProvider(nodes_per_block=N, max_blocks=1, launcher=SrunLauncher(overrides="--ntasks-per-node 1 --gpus-per-node 4"))` so a single srun starts one worker pool per node (`nodes_per_block=1 + max_blocks=N` makes blocks share `$SLURM_JOB_NAME` and clobber each other's cmd script). The sbatch/salloc body runs `python scan.py` directly — **not** wrapped in an outer `srun`, which would collide with parsl's internal srun.
 
