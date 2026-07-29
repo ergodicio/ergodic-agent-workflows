@@ -45,7 +45,7 @@ ACCOUNT     = m4490
 SSH_HOST    = perlmutter                                       # ssh alias configured by sshproxy
 QOS         = interactive
 CONSTRAINT  = gpu
-TIME_LIMIT  = 01:00:00                                         # interactive QOS cap is 1 hour
+TIME_LIMIT  = 01:00:00                                         # example default 1h; interactive QOS max walltime is 4h
 ```
 
 `$USER`, `$PSCRATCH` are expanded by the remote shell. The user's local repo dir becomes the basename used for remote paths, so two different projects don't collide on NERSC.
@@ -264,7 +264,7 @@ Notes:
 - `python -u` for unbuffered output (so `tail -f` of the log is responsive).
 - `ergodic-claude.sh` provides `MLFLOW_TRACKING_URI` and (via `~/.mlflow_credentials`) `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`. If those are empty, the user hasn't filled in their credentials yet — point them at `vim ~/.mlflow_credentials` on Perlmutter.
 - For adept (the usual case), the entry point should be `uv run run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking.
-- The interactive QOS caps at 1 hour — for longer runs the user must switch to `--qos=regular` and a different time limit.
+- The interactive QOS max walltime is 4 hours — for longer runs the user must switch to `--qos=regular` and a different time limit.
 
 ### Monitor
 
