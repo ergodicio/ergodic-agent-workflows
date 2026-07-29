@@ -19,7 +19,7 @@
 : "${EC_ACCOUNT:=m4546}"
 : "${EC_QOS:=interactive}"
 : "${EC_CONSTRAINT:=gpu}"
-: "${EC_TIME_LIMIT:=01:00:00}"   # interactive QOS caps at 1h
+: "${EC_TIME_LIMIT:=01:00:00}"   # default 1h; interactive QOS max walltime is 4h
 : "${EC_NODES:=1}"
 # GPUs to bind per node. REQUIRED for the srun step to see the GPUs — without
 # it, salloc reserves the (exclusive) nodes but the step gets CUDA_ERROR_NO_DEVICE

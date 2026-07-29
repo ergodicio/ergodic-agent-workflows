@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Allocate an interactive CPU node on the cluster, named after the current repo.
 # Usage: interactive-cpu.sh [hours] [nodes]
-#   hours: walltime hours (default 1, interactive QOS caps at 1)
+#   hours: walltime hours (default 1; interactive QOS max walltime is 4)
 #   nodes: number of nodes, 1-4 (default 1; interactive QOS caps at 4)
 #
 # Job name is the basename of $PWD so it's identifiable in squeue.
