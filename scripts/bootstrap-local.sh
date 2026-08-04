@@ -32,7 +32,7 @@ fi
 
 # 2. Skills
 mkdir -p "${CLAUDE_SKILLS_DIR}"
-for skill in nersc-workflow mlflow-query adept-run; do
+for skill in nersc-workflow aws-batch-run mlflow-query adept-run zotero; do
   src="${REPO_ROOT}/skills/${skill}"
   dst="${CLAUDE_SKILLS_DIR}/${skill}"
   if [[ -e "${dst}" && ! -L "${dst}" ]]; then

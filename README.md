@@ -1,10 +1,12 @@
 # ergodic-claude
 
-The Ergodic flavor of [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) — a small set of skills, scripts, and an example that wires Claude Code up to the team's NERSC (Perlmutter) compute and MLflow tracking server.
+The Ergodic flavor of [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) — a small set of skills, scripts, and an example that wires Claude Code up to the team's compute (NERSC Perlmutter and AWS Batch) and MLflow tracking server.
 
 After installing this once, you can run Claude Code from any project repo on your laptop and ask things like:
 
 > sync and launch this on NERSC
+
+> run this on AWS instead, Perlmutter is down
 
 > how is the run going
 
@@ -19,8 +21,10 @@ After installing this once, you can run Claude Code from any project repo on you
 | Path | What it is |
 | --- | --- |
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
+| `skills/aws-batch-run/` | Skill that runs the same simulations on AWS Batch instead — bundles the working tree to S3, submits to a generic job definition, monitors, verifies results |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
+| `skills/zotero/` | Skill that looks up papers/references/PDFs in the user's Zotero library via the Zotero API (local read-only API by default, Web API for writes) |
 | `scripts/ops/` | Thin wrappers around safe `ssh perlmutter "…"` invocations (squeue, sacct, scancel, interactive-gpu, sync-up, log read/grep, mlflow get-params/list/download-artifact). Bootstrap symlinks these to `~/.claude/scripts/ergodic/` so they have a stable path and can be allowlisted in one rule |
 | `scripts/bootstrap-local.sh` | Installs `uv`, links the skills into `~/.claude/skills/`, links ops scripts into `~/.claude/scripts/ergodic/`, checks ssh |
 | `scripts/bootstrap-nersc.sh` | Installs `uv` on Perlmutter, creates the venv and scratch directories the skill expects |
@@ -36,6 +40,8 @@ You need three things before installing:
 2. **`sshproxy` set up locally** so you can `ssh perlmutter` without typing OTP every time. Follow the [NERSC sshproxy docs](https://docs.nersc.gov/connect/mfa/#sshproxy). At the end you should have a `perlmutter` Host alias in `~/.ssh/config`. Test with `ssh perlmutter true`.
 3. **MLflow credentials** for `https://continuum.ergodic.io/experiments/`. Ask in the team Slack if you don't have a token yet.
 4. **Claude Code installed.** See https://docs.claude.com/en/docs/claude-code/setup.
+
+For the AWS Batch path (`skills/aws-batch-run/`) you also need **AWS credentials in `~/.aws/`** for account `106231741818` (Batch submit, the code bucket, CloudWatch logs, and the MLflow artifact bucket), and a local checkout of [continuum-infra](https://github.com/ergodicio/continuum-infra), which is where `sim-runner/submit.py` currently lives. NERSC access is not required for that path.
 
 ---
 
