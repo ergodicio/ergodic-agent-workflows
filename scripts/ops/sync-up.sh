@@ -5,7 +5,8 @@
 # Stamps the current git commit SHA to .git_commit first so training scripts
 # can log it to MLflow (since .git/ is excluded from the rsync).
 # Excludes match the nersc-workflow skill: __pycache__, .git, .venv,
-# checkpoints, runinfo, workdir, plots, *.ipynb_checkpoints, uv.lock.
+# checkpoints, runinfo, workdir, plots, *.ipynb_checkpoints, uv.lock,
+# mlruns/, mlflow.db.
 # workdir/ holds run outputs + detached-launch logs on scratch (see
 # kinetic-srs CLAUDE.md) — without the exclude, --delete wipes it on every
 # sync (it deleted remote launch logs on 2026-06-11).
@@ -43,6 +44,8 @@ rsync -avz --delete \
     --exclude='runinfo/' \
     --exclude='workdir/' \
     --exclude='plots/' \
+    --exclude='mlruns/' \
+    --exclude='mlflow.db' \
     --exclude='*.ipynb_checkpoints' \
     --exclude='uv.lock' \
     ./ \
