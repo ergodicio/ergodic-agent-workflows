@@ -276,6 +276,48 @@ Scaling past one node does **not** require `SlurmProvider` — use the multi-nod
 the scan itself should submit and own its jobs (and then don't hardcode the account: read it
 from `~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU`).
 
+### Sizing a scan: measure ms/step, don't read MLflow durations
+
+**MLflow does not log how many GPUs a run used**, so an MLflow wall-clock duration cannot be
+converted into a cost. Estimating a scan from one anyway came out **4x optimistic** — enough to
+set a 6 h walltime on a member that needed 8.9 h and would have been killed mid-solve.
+
+Measure instead: run a handful of steps and read the progress bar's rate, then scale by the
+cells and steps you actually want. For a grid-based solver the scaling is linear in the state
+size, so one measurement covers the whole scan:
+
+```
+gpu_h = (tmax/dt) / steps_per_sec * (nx/nx_ref) * (nv/nv_ref) / 3600
+```
+
+Record the reference point *with the hardware* (e.g. "25 steps/s at 4096x2048 on one A100"),
+because that is the number the next person needs. Multi-GPU sharding is not free: measured
+speedup on 4 A100s was **3.14x**, not 4x, and a doc figure implying 3.75x was optimistic — use
+your own measurement to size walltimes.
+
+### Probe device memory before spending an allocation
+
+The save buffers (`diffrax` `SubSaveAt` outputs) accumulate in **device** memory during the
+solve and are sized by each tier's `nt`, **not** by `tmax`. That gives a cheap exact test: set
+`tmax` to a few hundred steps but **keep production `nt`**, and the run allocates the real
+footprint in ~2 min.
+
+A "smoke test" that shrinks `nt` as well as `tmax` tells you nothing about memory. That
+distinction is not academic — it is the difference between learning `RESOURCE_EXHAUSTED: Out of
+memory while trying to allocate 33.85GiB` in two minutes and learning it an hour into a 4 h
+allocation.
+
+Two traps worth stating plainly:
+
+- **Sharding one run across 4 GPUs does not reduce its memory.** adept's `grid.parallel` is
+  explicit: "one process, one node, no distributed memory… it does not let you run a bigger
+  one." The full distribution function is allocated on the default device and the state
+  `diffrax` carries stays a global array, so a 4-GPU run must still fit on **one** card. It buys
+  throughput only.
+- **A peak measured on a small case does not generalize.** 23.8 GB at `nx=8192` (55% of a 40 GB
+  A100) does not license dropping `hbm80g` for `nx=32768` — those members needed 29–34 GiB
+  single allocations and OOM'd. Measure the member you intend to run.
+
 ---
 
 ## Differentiable training / optimization loops (hybrid parent/child)

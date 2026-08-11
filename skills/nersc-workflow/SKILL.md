@@ -44,10 +44,33 @@ VENV        = $SW/$USER/venvs/$REPO      # uv venv (persistent, fast on compute,
 SSH_HOST    = perlmutter                 # ssh alias configured by sshproxy
 QOS         = interactive
 CONSTRAINT  = gpu
-TIME_LIMIT  = 01:00:00                   # interactive QOS cap is 1 hour
+TIME_LIMIT  = 04:00:00                   # gpu_interactive MaxWall; verify with sacctmgr
 ```
 
 `$USER`, `$PSCRATCH` are expanded by the remote shell. The user's local repo dir becomes the basename used for remote paths, so two different projects don't collide on NERSC.
+
+> **`REPO = $(basename "$PWD")` breaks in a git worktree.** Claude launched from
+> `.claude/worktrees/my-branch-a32198/` derives `REPO=my-branch-a32198`, so `sync-up.sh` and
+> `submit-batch.sh` target `$PSCRATCH/my-branch-a32198/` — a directory that does not exist and,
+> worse, is **not** where the venv's editable install points. Symptoms: `submit-batch.sh` dies
+> with `cd: no such file or directory`, or a job runs against a stale tree. From a worktree,
+> rsync and submit against `$PSCRATCH/<real-repo-name>/` explicitly, and confirm the venv's
+> target first:
+>
+> ```bash
+> ssh perlmutter 'cat $ECLAUDE_VENVS/<repo>/lib/python*/site-packages/__editable__*<repo>*.pth 2>/dev/null || \
+>                 cat $ECLAUDE_VENVS/<repo>/lib/python*/site-packages/_editable_impl_*<repo>*.pth'
+> ```
+
+> **Requiring `hbm80g` can mean waiting forever.** The 80 GB pool is ~250 nodes against ~1500
+> for plain `gpu`, and it is routinely fully allocated (measured 2026-08-11: `alloc 252,
+> drain 126, idle 0` — a 4-node interactive request had no path to running, while plain `gpu`
+> had idle nodes). Ask for it only when you have measured that the job needs >40 GB, and say
+> which measurement. Check before committing:
+>
+> ```bash
+> ssh perlmutter 'sinfo -h -o "%b|%t|%D" | grep hbm80g | awk -F"|" "{a[\$2]+=\$3} END{for(k in a) print k, a[k]}"'
+> ```
 
 ### Never hardcode the account or the project space — read them from config
 
@@ -247,16 +270,28 @@ The launcher uses `GIT_SSH_COMMAND` with `~/.ssh/<repo>-deploy` for all git ops.
 
 **Deps.** The shared venv still provides third-party deps (adept, jax, …); only the project package comes from the pinned tree (via `PYTHONPATH`). If a commit adds a dependency, install it into the shared venv on the login node once — that's additive and won't repoint the editable link. Do **not** `uv pip install -e` the pinned tree into the shared venv; that reintroduces the shared-state hazard.
 
-**Sharding one run across multiple GPUs per node (vs. one run per GPU):** set the HTEX `available_accelerators` to *grouped* device lists — `["0,1,2,3"]` gives one worker that owns all 4 GPUs (so `jax.devices()==4` and the solver can shard across them), whereas `available_accelerators=4` gives four single-GPU workers. For multi-node, pair the grouped form with `LocalProvider(nodes_per_block=N, max_blocks=1, launcher=SrunLauncher(overrides="--ntasks-per-node 1 --gpus-per-node 4"))` so a single srun starts one worker pool per node. The sbatch/salloc body runs `python scan.py` directly — **not** wrapped in an outer `srun`, which would collide with parsl's internal srun.
+**Sharding one run across multiple GPUs per node (vs. one run per GPU):** set the HTEX `available_accelerators` to *grouped* device lists — `["0,1,2,3"]` gives one worker that owns all 4 GPUs (so `jax.devices()==4` and the solver can shard across them), whereas `available_accelerators=4` gives four single-GPU workers. The sbatch/salloc body runs `python scan.py` directly — **not** wrapped in an outer `srun`, which would collide with parsl's internal srun.
 
-**Two different block layouts — don't cross them.** The grouped/sharded form above uses
-`nodes_per_block=N, max_blocks=1` (one srun spanning N nodes). The canonical one-run-per-GPU
-scan does the opposite: `nodes_per_block=1, max_blocks=N` (N sruns, one per node) — see
-`adept-run`. A previous note here warned that `nodes_per_block=1 + max_blocks=N` makes blocks
-share `$SLURM_JOB_NAME` and clobber each other's cmd script; that was observed while building
-the *sharded* config, and `ml-for-lpi` has run the one-block-per-node layout in production
-without it. Treat it as a symptom to recognize, not a reason to avoid the canonical config: if
-blocks die at launch with a missing or truncated cmd script, this is what you're looking at.
+For multi-node, use the **same** provider shape as the one-run-per-GPU scan —
+`nodes_per_block=1, max_blocks=nodes`, `SrunLauncher(overrides="-c 32 --gpus-per-node 4")` —
+and change only `available_accelerators`. Verified 2026-08-11 on 4 nodes: grouped
+`["0,1,2,3"]` gave one manager per node reporting `Accelerators: 0,1,2,3` and one 4-GPU worker
+each, no bind errors; the one-per-GPU form on the same provider gave `Accelerators: 0 1 2 3`
+and 16 workers. **Do not add `--ntasks-per-node 1`** to the launcher overrides — that is what
+the earlier version of this note prescribed, and it fails to bind CPUs (see the parsl driver
+exception below).
+
+**One block layout for both.** Use `nodes_per_block=1, max_blocks=N` (N sruns, one per node)
+whether you want one run per GPU or one 4-GPU run per node — see `adept-run` for the canonical
+config. An earlier version of these notes had the sharded form on `nodes_per_block=N,
+max_blocks=1`, but the same 4-node test that validated the grouped accelerators above ran it on
+one-block-per-node without trouble, so there is no need to keep two shapes in your head.
+
+A previous note here warned that `nodes_per_block=1 + max_blocks=N` makes blocks share
+`$SLURM_JOB_NAME` and clobber each other's cmd script. `ml-for-lpi` has run this layout in
+production without it, and it did not reproduce in the 2026-08-11 test. Treat it as a symptom
+to recognize, not a reason to avoid the config: if blocks die at launch with a missing or
+truncated cmd script, this is what you're looking at.
 
 ### Attach to a persistent interactive allocation (preferred for dev iteration)
 
@@ -303,6 +338,62 @@ ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=
 
 **Why the driver goes on a compute node (and why you still detach):** an unwrapped `bash -c '…'` body executes on the login/submit node, exposed to two independent killers: (a) **SIGHUP** when your ssh drops or the login node reboots — the ~20–30 min failure people hit on long scans; (b) **SIGTERM from NERSC login-node process policing**, which reaps busy login-resident processes at random (observed: a healthy 12-GPU scan torn down at 38 min while identical launches elsewhere survived 2.5 h+; `setsid` does not block SIGTERM). The `srun --overlap -N1 -n1` wrapper removes the policing target: the only login-resident piece left is the near-idle `salloc` client. **Still detach the launch** (`setsid …` / `nohup …`) — salloc itself dies with your ssh session otherwise (SIGHUP). For a run that may exceed the 4 h interactive cap, use **`sbatch`** instead (below).
 
+> ### EXCEPTION — a multi-node *parsl* driver must NOT be inside an `srun` step
+>
+> Everything above is for a driver that places its own workers (torchrun) or none at all.
+> **It does not apply to the canonical one-block-per-node parsl scan** (`adept-run`,
+> *"Multi-node GPU scan — 16 runs on 16 GPUs"*). There, each block is its own `srun`, and a
+> driver already occupying a job step makes those worker sruns fail to bind CPUs — on every
+> node, within seconds of submission:
+>
+> ```
+> srun: error: CPU binding outside of job step allocation,
+>              allocated CPUs are: 0x000000000000FFFF000000000000FFFF
+> srun: error: Unable to satisfy cpu bind request
+> -> parsl marks the block MISSING; every task dies with BadStateException
+> ```
+>
+> The CPU mask in that message is a red herring. Requesting CPUs in the `salloc`
+> (`--cpus-per-task=128`) does **not** fix it, and neither does adding `--overlap` to the
+> worker launcher — both tried. The cause is the driver's step, and `ml-for-lpi`'s
+> `launch/launch_ign.sh` records the same lesson independently ("0 connected workers", NOTES
+> Run 23).
+>
+> **Correct placement for multi-node parsl:**
+>
+> | how you're running | where the driver goes |
+> |---|---|
+> | interactive (`salloc --no-shell`) | **login node**, with `SLURM_JOB_ID=<jobid>` exported, backgrounded with `nohup` |
+> | batch (`sbatch`) | the sbatch body **directly** — no `srun` wrapper |
+>
+> ```bash
+> # interactive: allocate, then drive from the login node
+> alloc=$(ssh perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive \
+>   --time=04:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --no-shell" 2>&1)
+> JOBID=$(printf '%s\n' "$alloc" | grep -oE 'Granted job allocation [0-9]+' | grep -oE '[0-9]+$')
+> ssh perlmutter "cd \$PSCRATCH/${REPO} && \
+>   SLURM_JOB_ID=${JOBID} nohup python -u scan.py --nodes 4 > \$PSCRATCH/${REPO}/workdir/scan.log 2>&1 &"
+> ```
+>
+> parsl then sruns the per-node worker pools **into** that allocation and they connect back to
+> the driver's interchange. The login node having no GPU driver is fine and expected — the
+> driver does no compute, and its jax falls back to CPU cleanly (no `CUDA_ERROR_NO_DEVICE`).
+> The policing risk from (b) above is much lower here than for a busy driver, because a parsl
+> driver is almost entirely idle while it waits on futures; still `nohup` it.
+>
+> **Verify in the first ~60 s** rather than discovering this an hour in — one manager per
+> node, each owning that node's GPUs, and no bind errors:
+>
+> ```bash
+> ssh perlmutter 'R=$(ls -td $PSCRATCH/<repo>/runinfo/*/ | head -1)
+>   ls -d $R/*/block-*/*/ | wc -l                      # want: one per node
+>   grep -h "Accelerators:" $R/*/block-*/*/manager.log  # want: "0 1 2 3" per node
+>   grep -rl "cpu bind" $R | wc -l'                     # want: 0
+> ```
+>
+> Observed 2026-08-11 on Perlmutter (parsl 2026.02.16): srun-wrapped driver → 0 workers on
+> 4 nodes; login-node driver, same provider config → 4 managers, 16 workers, 0 bind errors.
+
 ### Multi-node alternative: sbatch (no detach)
 
 This is an **alternative** to detaching the multi-node one-shot, not a replacement: for runs **≤ 4 h, prefer the detached one-shot** (interactive, faster to schedule; with the `srun --overlap -N1 -n1` driver wrapper it is equally login-independent apart from the idle salloc client). Reach for `sbatch` when a run may exceed the 4 h interactive cap. **`sbatch` cannot use the interactive QOS** — Perlmutter rejects it at submission (`sbatch: error: Cannot submit batch jobs to gpu_interactive_ss11`, tested 2026-07-03) — so batch jobs ride the `regular` queue (slower to schedule). A batch job runs its script on a **compute node under SLURM**, with nothing tied to your terminal — so ssh drops and login reboots can't kill it, and no `setsid` / `nohup` is needed. The parsl part is unchanged: the script still runs `python -u scan.py` with **no outer srun** (the sbatch script already executes on the head compute node, so the driver needs no placement wrapper there; parsl's `SrunLauncher` does the internal `srun --overlap`).
@@ -324,7 +415,22 @@ The template hardcodes `--qos=regular` (the interactive QOS rejects sbatch — s
 | Pros | Interactive QOS, nodes now (no batch queue); fast dev iteration; driver on a compute node (policing/reboot-immune) | Compute-node driver — immune to ssh drops *and* login reboots; no detach ceremony; `regular` lifts the interactive walltime cap |
 | Cons | Idle `salloc` client still lives on the login node (dies if the login node itself reboots); manual `setsid`/`disown` ceremony, easy to fumble | `regular` queue only (interactive QOS rejects sbatch) — not instant; less live/interactive |
 
-Rule of thumb: **multi-node ≤ 4 h → detached one-shot with the `srun --overlap -N1 -n1` driver wrapper (preferred); a run that may exceed 4 h → `sbatch` on `regular`.**
+Rule of thumb: **multi-node ≤ 4 h → detached one-shot with the `srun --overlap -N1 -n1` driver wrapper (preferred); a run that may exceed 4 h → `sbatch` on `regular`.** For a multi-node **parsl** scan, drop the `srun` wrapper — see the exception above.
+
+**One more reason batch may be the only option: the interactive QOS caps SUBMITTED jobs at 2 per user.** A third `salloc` is refused at submit time, not queued:
+
+```
+salloc: error: QOSMaxSubmitJobPerUserLimit
+salloc: error: Job submit/allocate failed: Job violates accounting/QOS policy
+```
+
+So a campaign of more than two concurrent allocations has to put the remainder on `regular`. Read the live limits rather than trusting this line — `MaxWall`, `MaxSubmitJobsPU` and the per-job node cap all live in the QOS:
+
+```bash
+ssh perlmutter 'sacctmgr -nP show qos gpu_interactive format=Name,MaxWall,MaxSubmitJobsPU,MaxTRESPerJob'
+```
+
+Measured 2026-08-11: `gpu_interactive` = 4 h wall, **4 nodes per job**, **2 submitted jobs per user**; `gpu_regular` = 48 h.
 
 **Running on a parked allocation (e.g. an `interactive-shared.sh` slice):** the `interactive-*.sh` scripts use `salloc --no-shell`, which leaves the allocation sitting in the queue. To run on it, read its job id from `squeue` and `srun --jobid=<id> --overlap` into it — **do not** issue a fresh `salloc` (that allocates a *second* node and bypasses the shared slice you just reserved).
 ```bash
@@ -425,6 +531,26 @@ the machine rather than against plausibility:
 | The module name/version exists here | `ssh perlmutter "module spider <name>"` |
 | GPUs were actually bound to the step, not just the job | `~/.claude/scripts/ergodic/sacct.sh <jobid>` → `AllocTRES` shows `gres/gpu=N`; in-job, `nvidia-smi -L` or `python -c "import jax; print(jax.devices())"` |
 | The job really finished | `sacct.sh <jobid>` → `State=COMPLETED`, `ExitCode=0:0` — a quiet log is not evidence |
+| How many nodes the code thinks it has | see the `SLURM_*` trap below — do not read `$SLURM_NNODES` from inside a step |
+| The QOS will even accept another job | `sacctmgr -nP show qos gpu_interactive format=MaxSubmitJobsPU` — interactive is 2 |
+
+> **`SLURM_NNODES` lies inside a job step, and so does `SLURM_JOB_NODELIST`.** A driver run
+> under `srun --overlap --nodes=1 --ntasks=1` sees the *step's* view, not the job's. Measured
+> inside such a step on a 4-node allocation:
+>
+> ```
+> SLURM_NNODES=1                                     <- step-scoped
+> SLURM_STEP_NUM_NODES=1                             <- step-scoped
+> SLURM_JOB_NODELIST=nid003892                       <- ALSO step-scoped, despite the name
+> SLURM_NODELIST=nid[001164,003892,008261,008301]    <- the whole allocation
+> ```
+>
+> The intuitive variables are all wrong and the survivor is the one whose name suggests
+> otherwise. A scan driver that auto-detected nodes from `$SLURM_NNODES` got 1 instead of 4, so
+> parsl built a single 4-worker manager with accelerator groups `0..15` on nodes that only have
+> GPUs `0-3` — three of four workers pinned to devices that do not exist, with no error until
+> the tasks failed. **Pass the node count explicitly from the launcher** (which knows it), and
+> if you must autodetect, count `SLURM_NODELIST` and range-expand `nid[001-004]` forms.
 
 The recurring HPC mistakes to stay suspicious of, all of which this skill has already been
 bitten by and documented above: confusing login-node work with compute-node work
