@@ -64,6 +64,10 @@ Bounded roots on Perlmutter that are almost always what you actually wanted:
 - Bounds that keep that safe: write only inside `$USER/`, never elsewhere under the
   project's global common (it is shared with teammates), and only from a **login node** —
   global common is read-only from compute, so never from inside `salloc`/`srun`.
+- Installing or updating that environment on a login node is therefore expected, not a
+  violation of the "substantial work belongs in an allocation" principle above: there is
+  no allocation that can write global common. It is minutes, once per project, and
+  attended. Don't route it through `salloc`, and don't move the venv to make that possible.
 - Never put credentials, tokens, or private keys into a prompt, a commit, a log line, or a
   command line. On Perlmutter they are read from files (`~/.mlflow_credentials`,
   `~/.ssh/*-deploy`) by the launch scripts — keep it that way.

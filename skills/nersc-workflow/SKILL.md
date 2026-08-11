@@ -584,11 +584,21 @@ that case:
   running unattended — busy login-resident processes get SIGTERM'd at random. Anything
   computationally substantial goes through an allocation
   (`interactive-cpu.sh` / `interactive-gpu.sh`).
-- **Two things that must live on a login node anyway**, because they can't run elsewhere:
-  the `uv` venv install (3–10 min the first time — global common is read-only on compute)
-  and a multi-node parsl driver (which must not hold a job step — see the EXCEPTION above;
-  it's near-idle, so it's a poor policing target). Both are attended: watch them rather
-  than walking away. Everything else goes to a compute node.
+- **Decided: the `uv` venv install runs on a login node.** It is the only place it can run —
+  `/global/common/software/` is read-only from every compute node, so no job, step, or
+  allocation can write the venv, and that's where NERSC wants Python environments (see
+  "Never hardcode the account…" and `rules/nersc-agent-rules.md`). Don't try to route it
+  through an allocation, and don't relocate the venv to make it routable. What keeps this
+  defensible: it's 3–10 min once per project and seconds on every no-op re-run; it's
+  IO/network-bound wheel unpacking, not a `make -j128`; and it's **attended** — you're
+  watching it, not walking away. If policing ever does reap one mid-install, just re-run it:
+  the step is idempotent and uv resumes from its cache. (An `xfer`-QOS job is the only other
+  thing with write access to global common — untested here, and unnecessary at these
+  durations.)
+- A multi-node parsl driver is the other login-node resident, for a different reason: it
+  must not hold a job step (see the EXCEPTION above). It's near-idle while waiting on
+  futures, so it's a poor policing target — but `nohup` it and check on it.
+- Everything else goes to a compute node.
 
 ## Iteration workflow
 
