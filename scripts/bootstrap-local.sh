@@ -5,8 +5,9 @@
 #   1. Installs uv if it's missing (per-user, no sudo)
 #   2. Symlinks the skills into ~/.claude/skills/ so Claude Code picks them up globally
 #   3. Symlinks the ops scripts into ~/.claude/scripts/ergodic/ (one allowlist rule covers all)
-#   4. Verifies you can ssh to perlmutter
-#   5. Prints what to do next
+#   4. Installs NERSC's required agent rules into ~/.claude/CLAUDE.md (marker-delimited)
+#   5. Verifies you can ssh to perlmutter
+#   6. Prints what to do next
 #
 # Idempotent — safe to re-run.
 
@@ -58,7 +59,12 @@ ln -s "${REPO_ROOT}/scripts/ops" "${ops_dst}"
 say "Linked ops scripts: ${ops_dst} -> ${REPO_ROOT}/scripts/ops"
 say "  → Allow them in one rule: add 'Bash(~/.claude/scripts/ergodic/*)' to your settings."
 
-# 4. SSH check — fatal. The ops scripts and the nersc-workflow skill assume
+# 4. Agent rules — NERSC requires the filesystem-traversal rules to live in the agent's
+#    config file, not just in a skill (they must bind even when no skill is loaded).
+#    https://docs.nersc.gov/development/coding-agents/
+"${REPO_ROOT}/scripts/install-agent-rules.sh"
+
+# 5. SSH check — fatal. The ops scripts and the nersc-workflow skill assume
 #    `ssh perlmutter true` works non-interactively. There's no useful state
 #    past this point if it doesn't.
 say "Checking ssh to perlmutter…"
@@ -82,7 +88,7 @@ EOF
   exit 1
 fi
 
-# 5. MLflow env var hint
+# 6. MLflow env var hint
 say "Make sure these env vars are set in your shell profile (~/.zshrc or ~/.bashrc):"
 cat <<'EOF'
   export MLFLOW_TRACKING_URI=https://continuum.ergodic.io/experiments/

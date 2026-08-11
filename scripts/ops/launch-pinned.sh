@@ -17,13 +17,20 @@
 #   --nodes <N>       nodes per job (default 1)
 #   --time <HH:MM:SS> walltime (default 04:00:00)
 #   --qos <qos>       SLURM QOS (default regular)
-#   --account <acct>  SLURM account (default m4546_g)
+#   --account <acct>  SLURM account (default: $EC_ACCOUNT_GPU from config.sh)
 #   --gpus <N>        GPUs per node (default 4)
 #   --multinode       set PIC2D_MULTINODE=1 + one task PER GPU (jax.distributed)
 #   --dry-run         print the generated sbatch, do not submit
 set -euo pipefail
 
-NODES=1; WALLTIME="04:00:00"; QOS="regular"; ACCOUNT="m4546_g"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=config.sh
+. "$SCRIPT_DIR/config.sh"
+
+# Account and project space both come from config.sh so they can't disagree — this
+# script used to default to one project's `_g` account while pointing PYTHONPATH and
+# the venv at a different project's global-common dir.
+NODES=1; WALLTIME="04:00:00"; QOS="regular"; ACCOUNT=""
 GPUS=4; MULTINODE=0; DRYRUN=0; SHA=""
 CONFIGS=()
 while [ $# -gt 0 ]; do
@@ -43,6 +50,16 @@ while [ $# -gt 0 ]; do
 done
 [ ${#CONFIGS[@]} -ge 1 ] || { echo "error: need at least one config" >&2; exit 1; }
 
+if [ -z "$ACCOUNT" ]; then
+  ec_require_account
+  ACCOUNT="$EC_ACCOUNT_GPU"
+fi
+SOFTWARE_ROOT="$EC_SOFTWARE_ROOT"
+if [ -z "$SOFTWARE_ROOT" ]; then
+  echo "error: EC_SOFTWARE_ROOT is unset — set EC_ACCOUNT (see show-config.sh)" >&2
+  exit 1
+fi
+
 REPO="$(basename "$(git rev-parse --show-toplevel)")"
 REMOTE_URL="$(git remote get-url origin)"
 # normalize https -> ssh (deploy key is an ssh key)
@@ -58,7 +75,7 @@ if ! git branch -r --contains "$SHA" >/dev/null 2>&1 || [ -z "$(git branch -r --
 fi
 
 NTPN=1; [ "$MULTINODE" = 1 ] && NTPN=$GPUS
-echo "repo=$REPO sha=$SHORT nodes=$NODES gpus/node=$GPUS ntasks/node=$NTPN qos=$QOS time=$WALLTIME multinode=$MULTINODE dry-run=$DRYRUN"
+echo "repo=$REPO sha=$SHORT nodes=$NODES gpus/node=$GPUS ntasks/node=$NTPN qos=$QOS time=$WALLTIME account=$ACCOUNT multinode=$MULTINODE dry-run=$DRYRUN"
 echo "configs (${#CONFIGS[@]}): ${CONFIGS[*]}"
 
 {
@@ -72,6 +89,7 @@ NODES='$NODES'
 WALLTIME='$WALLTIME'
 QOS='$QOS'
 ACCOUNT='$ACCOUNT'
+SOFTWARE_ROOT='$SOFTWARE_ROOT'
 GPUS='$GPUS'
 NTPN='$NTPN'
 MULTINODE='$MULTINODE'
@@ -84,8 +102,8 @@ set -euo pipefail
 export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/${REPO}-deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 MIRROR="$SCRATCH/${REPO}-mirror.git"
 RUNDIR="$SCRATCH/${REPO}-runs/${SHA}"
-VENV="/global/common/software/m4490/$USER/venvs/${REPO}"
-ECSH="/global/common/software/m4490/$USER/ergodic-claude.sh"
+VENV="${SOFTWARE_ROOT}/$USER/venvs/${REPO}"
+ECSH="${SOFTWARE_ROOT}/$USER/ergodic-claude.sh"
 
 # 1. bare mirror (clone once, then fetch to update)
 if [ ! -d "$MIRROR" ]; then

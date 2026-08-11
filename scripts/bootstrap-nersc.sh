@@ -4,15 +4,17 @@
 # What this does (over ssh, as your NERSC user — runs on a login node):
 #   1. Installs uv on Perlmutter if missing
 #   2. Creates the directories the nersc-workflow skill expects:
-#        /global/common/software/m4490/$USER/venvs/      (per-project venvs)
-#        /global/common/software/m4490/$USER/uv-python/  (uv-managed Pythons)
+#        <project-space>/$USER/venvs/      (per-project venvs)
+#        <project-space>/$USER/uv-python/  (uv-managed Pythons)
 #        $PSCRATCH/                                 (working area for synced repos)
 #        $PSCRATCH/uv-cache/                        (uv download cache, on fast scratch)
-#   3. Writes /global/common/software/m4490/$USER/ergodic-claude.sh with PATH, env vars,
+#   3. Writes <project-space>/$USER/ergodic-claude.sh with PATH, env vars,
 #      and a cd-hook that points uv at the right per-project venv
-#   4. Adds a single `. /global/common/software/m4490/$USER/ergodic-claude.sh` line to
+#   4. Adds a single `. <project-space>/$USER/ergodic-claude.sh` line to
 #      ~/.bash_profile.ext and ~/.zshrc.ext (NERSC's documented user-customization files)
 #   5. Creates ~/.mlflow_credentials (mode 600) with placeholders, if missing
+#   6. Installs NERSC's required agent rules into ~/.claude/CLAUDE.md *on Perlmutter*, so an
+#      agent started on a login node gets the same filesystem-traversal rules
 #
 # Run from your laptop. Requires that `ssh perlmutter` works (sshproxy set up).
 #
@@ -24,18 +26,73 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 say() { printf "\n\033[1;36m[ergodic-claude]\033[0m %s\n" "$*"; }
 die() { printf "\n\033[1;31m[ergodic-claude]\033[0m %s\n" "$*" >&2; exit 1; }
 
 ssh -o ConnectTimeout=10 perlmutter true 2>/dev/null \
   || die "Can't ssh to perlmutter. Run sshproxy first (or fix your ~/.ssh/config alias)."
 
+# 0. Which project are we setting up? Everything downstream — the SLURM account jobs are
+#    billed to and the global-common dir that holds the venvs — derives from this one value,
+#    so it gets resolved once, here, from SLURM's own associations rather than a default.
+. "${REPO_ROOT}/scripts/ops/config.sh"
+
+if [ -n "$EC_ACCOUNT" ]; then
+  say "Using project ${EC_ACCOUNT} (from ${EC_CONFIG:-env})"
+else
+  say "Looking up your NERSC projects…"
+  # while-read, not `mapfile`: macOS still ships bash 3.2 as /bin/bash.
+  PROJECTS=()
+  while IFS= read -r _line; do
+    [ -n "$_line" ] && PROJECTS+=("$_line")
+  done < <("${REPO_ROOT}/scripts/ops/list-accounts.sh")
+  [ "${#PROJECTS[@]}" -gt 0 ] \
+    || die "No chargeable projects found for your NERSC user. Ask your PI to add you to one."
+
+  if [ "${#PROJECTS[@]}" -eq 1 ]; then
+    EC_ACCOUNT="${PROJECTS[0]}"
+    say "One project found: ${EC_ACCOUNT}"
+  elif [ -t 0 ]; then
+    printf '\nYou belong to several projects. Which one should jobs be billed to?\n\n'
+    for i in "${!PROJECTS[@]}"; do printf '  %d) %s\n' "$((i+1))" "${PROJECTS[$i]}"; done
+    printf '\nNumber [1]: '
+    read -r pick
+    pick="${pick:-1}"
+    case "$pick" in
+      ''|*[!0-9]*) die "not a number: $pick" ;;
+    esac
+    [ "$pick" -ge 1 ] && [ "$pick" -le "${#PROJECTS[@]}" ] || die "out of range: $pick"
+    EC_ACCOUNT="${PROJECTS[$((pick-1))]}"
+  else
+    die "You belong to several projects (${PROJECTS[*]}) and stdin isn't a terminal.
+Re-run interactively, or pick one now:
+  mkdir -p \"$(dirname "$EC_CONFIG")\" && echo ': \"\${EC_ACCOUNT:=${PROJECTS[0]}}\"' >> \"$EC_CONFIG\""
+  fi
+
+  # Persist it outside the repo so `git pull` can't change which project you bill.
+  mkdir -p "$(dirname "$EC_CONFIG")"
+  {
+    printf '# ergodic-claude user config — written by bootstrap-nersc.sh, safe to edit.\n'
+    printf '# `: "${VAR:=value}"` form means an exported EC_* in your shell still wins.\n'
+    printf '# Your projects: ~/.claude/scripts/ergodic/list-accounts.sh\n'
+    printf ': "${EC_ACCOUNT:=%s}"\n' "$EC_ACCOUNT"
+  } > "$EC_CONFIG"
+  say "Wrote ${EC_CONFIG} (EC_ACCOUNT=${EC_ACCOUNT})"
+fi
+
+# Re-resolve so EC_ACCOUNT_GPU / EC_SOFTWARE_ROOT derive from the account just chosen.
+EC_ACCOUNT_GPU=""; EC_SOFTWARE_ROOT=""
+. "${REPO_ROOT}/scripts/ops/config.sh"
+say "Project ${EC_ACCOUNT} · GPU account ${EC_ACCOUNT_GPU} · project space ${EC_SOFTWARE_ROOT}"
+
 say "Setting up Perlmutter for \$USER (login node)…"
 
-ssh perlmutter bash -s <<'REMOTE'
+ssh perlmutter "EC_SOFTWARE_ROOT='${EC_SOFTWARE_ROOT}' bash -s" <<'REMOTE'
 set -euo pipefail
 
-PROJECT_ROOT="/global/common/software/m4490/${USER}"
+PROJECT_ROOT="${EC_SOFTWARE_ROOT}/${USER}"
 ENV_FILE="${PROJECT_ROOT}/ergodic-claude.sh"
 MARKER="# >>> ergodic-claude managed >>>"
 END_MARKER="# <<< ergodic-claude managed <<<"
@@ -135,6 +192,20 @@ echo "  scratch workdir:  ${PSCRATCH}         $([ -d "${PSCRATCH}" ] && echo OK)
 echo "  uv cache:         ${PSCRATCH}/uv-cache  $([ -d "${PSCRATCH}/uv-cache" ] && echo OK)"
 echo "  env file:         ${ENV_FILE}                $([ -f "${ENV_FILE}" ] && echo OK)"
 REMOTE
+
+# 6. NERSC's agent rules, on the Perlmutter side too. Someone running an agent from a login
+#    node needs the filesystem-traversal rules there, in that machine's ~/.claude/CLAUDE.md.
+#    Ship the installer + rules over rather than re-implementing the merge remotely: the
+#    rules text is full of `$VARS` and backticks that would not survive a heredoc.
+#    Stage under $HOME, not /tmp: `ssh perlmutter` round-robins across login nodes and /tmp
+#    is node-local, so a /tmp staging dir created by one connection is invisible to the next.
+say "Installing NERSC agent rules on Perlmutter…"
+REMOTE_TMP="$(ssh perlmutter 'mktemp -d "${HOME}/.ec-install-XXXXXX"')"
+[ -n "$REMOTE_TMP" ] || die "couldn't create a staging dir on Perlmutter"
+scp -q "${REPO_ROOT}/scripts/install-agent-rules.sh" "${REPO_ROOT}/rules/nersc-agent-rules.md" \
+        "perlmutter:${REMOTE_TMP}/" \
+  || die "couldn't copy the agent rules to Perlmutter (staging dir ${REMOTE_TMP})"
+ssh perlmutter "bash '${REMOTE_TMP}/install-agent-rules.sh' --rules '${REMOTE_TMP}/nersc-agent-rules.md'; rm -rf '${REMOTE_TMP}'"
 
 say "Perlmutter bootstrap done."
 say "Next steps:"

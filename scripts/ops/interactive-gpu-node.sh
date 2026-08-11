@@ -4,7 +4,7 @@
 # interactive-gpu.sh instead.
 #
 # Usage: interactive-gpu-node.sh [hours] [nodes]
-#   hours: walltime hours (default 1, interactive QOS caps at 1)
+#   hours: walltime hours (default 1; gpu_interactive allows up to 4 — measured 2026-08-11)
 #   nodes: number of nodes, 1-4 (default 1; interactive QOS caps at 4)
 #
 # Job name is the basename of $PWD so it's identifiable in squeue.
@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/config.sh"
 # shellcheck source=_preflight.sh
 . "$SCRIPT_DIR/_preflight.sh"
+
+ec_require_account
 
 HOURS="${1:-1}"
 NODES="${2:-1}"
@@ -32,5 +34,5 @@ ssh "$EC_SSH_HOST" "salloc --no-shell \
   --qos ${EC_QOS} \
   --time ${HOURS}:00:00 \
   --constraint gpu \
-  --account ${EC_ACCOUNT}
+  --account ${EC_ACCOUNT_GPU}
 squeue -u \$USER --name ${REPO}"

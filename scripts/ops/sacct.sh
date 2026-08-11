@@ -14,4 +14,9 @@ if [ $# -eq 0 ]; then
 fi
 
 JOB_IDS=$(IFS=,; echo "$*")
-ssh "$EC_SSH_HOST" "sacct -j $JOB_IDS --format=JobID,JobName%24,State,ExitCode,Elapsed,NodeList"
+# Fields follow NERSC's documented debugging format
+# (https://docs.nersc.gov/development/coding-agents/) plus NodeList. AllocTRES is the one
+# that earns its width: it shows the GRES actually bound per job *and* per step, which is
+# how you tell a real GPU allocation from a job that reserved nodes but whose srun step got
+# no devices (CUDA_ERROR_NO_DEVICE).
+ssh "$EC_SSH_HOST" "sacct -j $JOB_IDS --format=JobID%20,JobName%20,Partition,Account,AllocTRES%42,State,ExitCode,Elapsed,NodeList"

@@ -22,8 +22,11 @@
 # (no --job-name here: submit-batch.sh sets `-J <repo>` from your repo basename, so the
 #  job + its workdir/%x-... log are named after whatever project you run this from.
 #  If you `sbatch` this directly, SLURM names the job after the script filename.)
-#SBATCH --account=m4490_g
-#SBATCH --qos=regular                # interactive QOS rejects sbatch (tested 2026-07-03); regular also lifts the 4 h cap
+# (no --account here either: submit-batch.sh passes `-A $EC_ACCOUNT_GPU` from your
+#  ergodic-claude config, which overrides any #SBATCH --account. If you sbatch this
+#  directly you get your SLURM default account — check it with
+#  `~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU` and pass -A yourself.)
+#SBATCH --qos=regular              # interactive QOS rejects sbatch (tested 2026-07-03); regular also lifts the 4 h cap
 #SBATCH --constraint=gpu
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4            # REQUIRED — without it the parsl srun step gets CUDA_ERROR_NO_DEVICE
@@ -36,9 +39,13 @@ set -e   # not -u: sourcing ~/.bash_profile.ext / ergodic-claude.sh may referenc
 DRIVER="sims/<campaign>/scan.py"
 
 REPO="$(basename "$SLURM_SUBMIT_DIR")"     # submit-batch.sh cd's to $PSCRATCH/<repo> before sbatch
-VENV="/global/common/software/m4490/$USER/venvs/$REPO"
 
 source ~/.bash_profile.ext                 # MLflow env + creds (sources ergodic-claude.sh)
+
+# $ECLAUDE_VENVS comes from ergodic-claude.sh, so the project dir isn't hardcoded here
+# and can't drift from the account this job is billed to.
+: "${ECLAUDE_VENVS:?not set — run bootstrap-nersc.sh, or source ergodic-claude.sh}"
+VENV="$ECLAUDE_VENVS/$REPO"
 source "$VENV/bin/activate"
 export PYTHONPATH="$SLURM_SUBMIT_DIR"
 cd "$SLURM_SUBMIT_DIR"
