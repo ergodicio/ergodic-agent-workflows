@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Allocate an interactive GPU node on the cluster, named after the current repo.
 # Usage: interactive-gpu.sh [hours] [nodes]
-#   hours: walltime hours (default 1, interactive QOS caps at 1)
+#   hours: walltime hours (default 1; gpu_interactive allows up to 4 — measured 2026-08-11)
 #   nodes: number of nodes (default 1)
 #
 # Job name is the basename of $PWD so it's identifiable in squeue.

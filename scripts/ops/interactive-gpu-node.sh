@@ -4,7 +4,7 @@
 # interactive-gpu.sh instead.
 #
 # Usage: interactive-gpu-node.sh [hours] [nodes]
-#   hours: walltime hours (default 1, interactive QOS caps at 1)
+#   hours: walltime hours (default 1; gpu_interactive allows up to 4 — measured 2026-08-11)
 #   nodes: number of nodes, 1-4 (default 1; interactive QOS caps at 4)
 #
 # Job name is the basename of $PWD so it's identifiable in squeue.

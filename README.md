@@ -143,7 +143,7 @@ The `nersc-workflow` skill assumes:
 | MLflow credentials | `~/.mlflow_credentials` (mode 600 — fill in after running `bootstrap-nersc.sh`) |
 | SLURM account | `$EC_ACCOUNT` for CPU, `$EC_ACCOUNT_GPU` (`<project>_g`) for GPU — from your config, never hardcoded |
 | `$SW` (project space) | `$EC_SOFTWARE_ROOT` = `/global/common/software/<project>` |
-| Default QOS / constraint / time | `interactive` / `gpu` / `01:00:00` |
+| Default QOS / constraint / time | `interactive` / `gpu` / `01:00:00` (a polite default — `gpu_interactive` allows 4 h, 4 nodes, 2 submitted jobs) |
 
 Run `scripts/ops/show-config.sh` to see what those resolve to for you.
 

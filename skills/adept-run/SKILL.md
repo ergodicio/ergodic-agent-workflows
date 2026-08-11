@@ -253,17 +253,31 @@ Why each piece is there — none of it is decoration:
 | `retries=2` | **Load-bearing.** With `retries=0` a single worker death hangs the *whole* scan at the batch barrier (hit 2026-06-29). |
 | `cmd_timeout=120` | Block launches on a busy node can exceed the 30 s default and get spuriously reaped. |
 
-**Where the allocation comes from:** this config expects to run *inside* an existing
-allocation of `nodes` nodes — a 4-node `salloc` (detached one-shot) or `sbatch`. Get it from
-the `nersc-workflow` skill, and note the rule there: the driver runs `python -u scan.py` with
-**no outer `srun`** (or wrapped in exactly `srun --overlap -N1 -n1` for the detached
-one-shot). parsl issues its own `srun` per block; an outer one collides.
+**Where the allocation comes from — and where the driver must NOT be.** This config expects an
+existing allocation of `nodes` nodes (a 4-node `salloc`, or `sbatch`). Because every block is
+its own `srun`, **the driver must not itself occupy a job step**:
 
-**One-run-per-GPU vs. one-run-across-4-GPUs.** The config above is one *independent* run per
-GPU — the right thing for a scan. If instead you want a single run *sharded* across a node's
-4 GPUs (`jax.devices() == 4`), that's a different config: grouped
-`available_accelerators=["0,1,2,3"]`, and see the note in `nersc-workflow` about pairing it
-with `nodes_per_block=N, max_blocks=1`. Don't mix the two shapes.
+| how you're running | where the driver goes |
+| --- | --- |
+| interactive (`salloc --no-shell`) | **login node**, `SLURM_JOB_ID=<jobid>` exported, `nohup`'d |
+| batch (`sbatch`) | the sbatch body **directly** — no `srun` wrapper |
+
+Wrapping this driver in `srun --overlap -N1 -n1` — which `nersc-workflow` prescribes for
+*torchrun-style* multi-node drivers — kills the scan in seconds: the worker sruns can't bind
+CPUs (`Unable to satisfy cpu bind request`), parsl marks every block MISSING, and all tasks die
+with `BadStateException`. Measured 2026-08-11 on 4 nodes; `--cpus-per-task=128` and adding
+`--overlap` to the worker launcher both fail to fix it. See the **EXCEPTION** box in
+`nersc-workflow` for the launch snippet and the 60-second verification (one manager per node,
+right accelerators, zero bind errors) — check that before walking away from a launch.
+
+**One-run-per-GPU vs. one-run-across-4-GPUs — same provider, one setting apart.** The config
+above gives one *independent* run per GPU, which is what a scan wants. For a single run
+*sharded* across a node's 4 GPUs (`jax.devices() == 4`), keep the provider exactly as-is and
+change only the accelerator spec to a grouped list, `available_accelerators=["0,1,2,3"]`
+(verified 2026-08-11: one manager per node, `Accelerators: 0,1,2,3`, one 4-GPU worker each).
+Both layouts run on `nodes_per_block=1, max_blocks=nodes` — there is no second provider shape
+to remember, and **don't** add `--ntasks-per-node 1` to the launcher overrides. Sharding buys
+throughput, not memory: see "Probe device memory" below.
 
 ### Picking `workers_per_node`
 

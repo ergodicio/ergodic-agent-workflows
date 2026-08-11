@@ -334,7 +334,9 @@ ACCOUNT_GPU=$(~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU)
 ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun --overlap --nodes=1 --ntasks=1 bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
 ```
 
-**IMPORTANT: multi-node wraps the driver in exactly `srun --overlap --nodes=1 --ntasks=1` — not a plain `srun`.** A plain outer `srun` (no flags) runs the command as an N-node job step and conflicts with the internal `srun --overlap` that Parsl/torchrun use to place workers (interconnect errors). The `--overlap --nodes=1 --ntasks=1` form instead runs the *driver* as a 1-task step on the head compute node, and the framework's internal worker srun still lays out across all nodes with full GPU pinning. Verified 2026-07-03 (Perlmutter, parsl HTEX + SrunLauncher): driver step `.0` on the head node, worker step `.1` spanning all nodes, workers GPU-pinned on every node, and a 1.5 h 8-run production scan completed with results byte-identical to its login-driver baseline.
+**IMPORTANT: multi-node wraps the driver in exactly `srun --overlap --nodes=1 --ntasks=1` — not a plain `srun`.** A plain outer `srun` (no flags) runs the command as an N-node job step and conflicts with the internal `srun --overlap` that torchrun-style frameworks use to place workers (interconnect errors). The `--overlap --nodes=1 --ntasks=1` form instead runs the *driver* as a 1-task step on the head compute node, and the framework's internal worker srun still lays out across all nodes with full GPU pinning. Verified 2026-07-03 (Perlmutter, parsl HTEX + SrunLauncher): driver step `.0` on the head node, worker step `.1` spanning all nodes, workers GPU-pinned on every node, and a 1.5 h 8-run production scan completed with results byte-identical to its login-driver baseline.
+
+**Why that 2026-07-03 result and the 2026-08-11 failure below are both real** — worth knowing, because the two look contradictory: the July run's worker step was **`.1` spanning all nodes**, i.e. *one* srun for the whole allocation (`nodes_per_block=N, max_blocks=1`), which coexists with a driver step. The canonical config is one srun **per node** (`nodes_per_block=1, max_blocks=nodes`), and those are what fail to bind CPUs when a driver step already exists. So the discriminator is the provider shape, not the framework: with the canonical one-block-per-node config the wrapper is fatal. (Inference from the step layout each note recorded, not a third measurement.) Since the sharded layout also moved to one-block-per-node, **every parsl config in these skills now wants the driver off-step** — see the EXCEPTION below.
 
 **Why the driver goes on a compute node (and why you still detach):** an unwrapped `bash -c '…'` body executes on the login/submit node, exposed to two independent killers: (a) **SIGHUP** when your ssh drops or the login node reboots — the ~20–30 min failure people hit on long scans; (b) **SIGTERM from NERSC login-node process policing**, which reaps busy login-resident processes at random (observed: a healthy 12-GPU scan torn down at 38 min while identical launches elsewhere survived 2.5 h+; `setsid` does not block SIGTERM). The `srun --overlap -N1 -n1` wrapper removes the policing target: the only login-resident piece left is the near-idle `salloc` client. **Still detach the launch** (`setsid …` / `nohup …`) — salloc itself dies with your ssh session otherwise (SIGHUP). For a run that may exceed the 4 h interactive cap, use **`sbatch`** instead (below).
 
@@ -368,6 +370,8 @@ ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=
 >
 > ```bash
 > # interactive: allocate, then drive from the login node
+> REPO=$(basename "$PWD")            # from a worktree, set this to the real repo name — see Conventions
+> ACCOUNT_GPU=$(~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU)
 > alloc=$(ssh perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive \
 >   --time=04:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --no-shell" 2>&1)
 > JOBID=$(printf '%s\n' "$alloc" | grep -oE 'Granted job allocation [0-9]+' | grep -oE '[0-9]+$')
@@ -444,7 +448,7 @@ Notes:
 - `python -u` for unbuffered output (so `tail -f` of the log is responsive).
 - `ergodic-claude.sh` provides `MLFLOW_TRACKING_URI` and (via `~/.mlflow_credentials`) `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`. If those are empty, the user hasn't filled in their credentials yet — point them at `vim ~/.mlflow_credentials` on Perlmutter.
 - For adept (the usual case), the entry point should be `uv run run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking.
-- The interactive QOS caps at 1 hour — for longer runs the user must switch to `--qos=regular` and a different time limit.
+- The `--time=01:00:00` above is a polite default, **not** the cap: `gpu_interactive` allows 4 h (and 4 nodes, 2 submitted jobs — measured 2026-08-11, re-check with `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`). Past 4 h, switch to `--qos=regular`.
 
 ### Monitor
 

@@ -58,7 +58,10 @@ fi
 # ---- Scheduler -------------------------------------------------------------
 : "${EC_QOS:=interactive}"
 : "${EC_CONSTRAINT:=gpu}"
-: "${EC_TIME_LIMIT:=01:00:00}"   # interactive QOS caps at 1h
+# Documented default only — the interactive-*.sh helpers take hours as their first argument
+# and don't read this. gpu_interactive actually allows 4 h (measured 2026-08-11); check with
+# `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`.
+: "${EC_TIME_LIMIT:=01:00:00}"
 : "${EC_NODES:=1}"
 # GPUs to bind per node. REQUIRED for the srun step to see the GPUs — without
 # it, salloc reserves the (exclusive) nodes but the step gets CUDA_ERROR_NO_DEVICE
