@@ -13,6 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_preflight.sh
 . "$SCRIPT_DIR/_preflight.sh"
 
+ec_require_account
+
 HOURS="${1:-1}"
 NODES="${2:-1}"
 REPO="$(basename "$PWD")"

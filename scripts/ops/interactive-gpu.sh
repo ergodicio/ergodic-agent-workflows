@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=_preflight.sh
 . "$SCRIPT_DIR/_preflight.sh"
 
+ec_require_account
+
 HOURS="${1:-1}"
 NODES="${2:-$EC_NODES}"
 REPO="$(basename "$PWD")"
@@ -26,5 +28,5 @@ ssh "$EC_SSH_HOST" "salloc --no-shell \
   --qos ${EC_QOS} \
   --time ${HOURS}:00:00 \
   --constraint ${EC_CONSTRAINT} \
-  --account ${EC_ACCOUNT}
+  --account ${EC_ACCOUNT_GPU}
 squeue -u \$USER --name ${REPO}"

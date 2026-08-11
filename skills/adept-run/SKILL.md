@@ -169,13 +169,112 @@ Then point the user at `mlflow-query` to compare the resulting runs.
 
 `main()` calls `ensure_experiment(base_cfg)` **before** dispatching the parsl futures. This is load-bearing, not decorative. If a scan's runs are the **first** ever logged to a given MLflow experiment, the concurrent workers race to create it on the tracking server: some runs land on the proper S3 artifact store while others fall back to the server's local default store (`mlruns/0`), and *their* `binary/*.nc` + `plots/` become unreachable — the only fix is a full re-run. (Hit for real on 2026-06-29: a 16-run scan into a new experiment landed 5/16 on S3 and 11/16 on the local store, 0/16 complete.) Pre-creating the experiment once, single-threaded, removes the race; it's idempotent, so it's a no-op when the experiment already exists. Keep the call in any scan that may target a not-yet-existing experiment. If your grid spans multiple experiment names, `ensure_experiment` each unique one.
 
+### Multi-node GPU scan — 16 runs on 16 GPUs (canonical)
+
+**This is the pattern to use for any GPU scan wider than one node.** It is the production
+config from `ml-for-lpi` (`ml4tpd/parsl_utils.py`, multi-node GPU path), which has run
+real campaigns on Perlmutter. `LocalProvider` still does the job at 4 nodes — you do **not**
+need `SlurmProvider`. One worker per GPU, 4 GPUs per node, 4 nodes → 16 concurrent runs,
+all inside the allocation you already hold.
+
+The shape: **one block per node** (`nodes_per_block=1`, `max_blocks=nodes`), each block an
+`srun` that starts a 4-worker pool pinned to that node's 4 GPUs.
+
+```python
+import os
+
+from parsl.config import Config
+from parsl.executors import HighThroughputExecutor
+from parsl.launchers import SrunLauncher
+from parsl.providers import LocalProvider
+
+GPUS_PER_NODE = 4          # Perlmutter GPU node = 4 A100s
+CPUS_PER_GPU = 32          # 128 logical CPUs / 4 GPUs
+
+
+def worker_init(repo: str) -> str:
+    """Shell that runs in each worker before any app.
+
+    Note what is NOT here: the MLflow token. Sourcing ~/.bash_profile.ext pulls
+    ergodic-claude.sh, which reads ~/.mlflow_credentials (mode 600) on the compute node
+    and exports $ECLAUDE_VENVS. f-string'ing os.environ["MLFLOW_TRACKING_PASSWORD"] into
+    worker_init instead — as older scan scripts do — writes your token in cleartext into
+    parsl's generated block scripts under runinfo/ on scratch, where it persists and syncs.
+    Source the credential file; never interpolate the secret.
+    """
+    return "; ".join(
+        [
+            "source $HOME/.bash_profile.ext",
+            f'source "$ECLAUDE_VENVS/{repo}/bin/activate"',
+            f'export PYTHONPATH="$PYTHONPATH:$PSCRATCH/{repo}"',
+            "export BASE_TEMPDIR=$PSCRATCH/tmp/",
+            "module unload cudatoolkit",             # jax ships its own CUDA; the module conflicts
+            "export XLA_PYTHON_CLIENT_PREALLOCATE=false",  # don't let one worker grab the whole device
+        ]
+    )
+
+
+def make_parsl_config(nodes: int = 4, repo: str | None = None) -> Config:
+    repo = repo or os.path.basename(os.getcwd())
+    return Config(
+        executors=[
+            HighThroughputExecutor(
+                label="gpu-scan",
+                available_accelerators=GPUS_PER_NODE,   # 4 workers, one bound per GPU
+                max_workers_per_node=GPUS_PER_NODE,
+                cpu_affinity="block",
+                provider=LocalProvider(
+                    nodes_per_block=1,                 # one block per node…
+                    max_blocks=nodes,                  # …N of them
+                    init_blocks=1,
+                    launcher=SrunLauncher(
+                        overrides=f"-c {CPUS_PER_GPU} --gpus-per-node {GPUS_PER_NODE}"
+                    ),
+                    worker_init=worker_init(repo),
+                    cmd_timeout=120,
+                ),
+            )
+        ],
+        retries=2,
+    )
+```
+
+Load it and dispatch exactly as the single-node template does — `ensure_experiment()` first
+(the artifact-loss race above bites hardest at 16 concurrent workers), then the futures.
+
+Why each piece is there — none of it is decoration:
+
+| Setting | Why |
+| --- | --- |
+| `available_accelerators=4` | Hands each worker its own GPU via `CUDA_VISIBLE_DEVICES`. Without it, 4 workers land on device 0 and OOM. |
+| `SrunLauncher(overrides="--gpus-per-node 4")` | The step's GRES. Same reason the `salloc` needs it — a step with no GRES request gets `CUDA_ERROR_NO_DEVICE` even on an exclusive node. |
+| `-c 32` | 32 logical CPUs per worker = 128/4. Omit it and srun packs workers onto too few cores. |
+| `cpu_affinity="block"` | Keeps each worker's threads on the cores nearest its GPU. |
+| `retries=2` | **Load-bearing.** With `retries=0` a single worker death hangs the *whole* scan at the batch barrier (hit 2026-06-29). |
+| `cmd_timeout=120` | Block launches on a busy node can exceed the 30 s default and get spuriously reaped. |
+
+**Where the allocation comes from:** this config expects to run *inside* an existing
+allocation of `nodes` nodes — a 4-node `salloc` (detached one-shot) or `sbatch`. Get it from
+the `nersc-workflow` skill, and note the rule there: the driver runs `python -u scan.py` with
+**no outer `srun`** (or wrapped in exactly `srun --overlap -N1 -n1` for the detached
+one-shot). parsl issues its own `srun` per block; an outer one collides.
+
+**One-run-per-GPU vs. one-run-across-4-GPUs.** The config above is one *independent* run per
+GPU — the right thing for a scan. If instead you want a single run *sharded* across a node's
+4 GPUs (`jax.devices() == 4`), that's a different config: grouped
+`available_accelerators=["0,1,2,3"]`, and see the note in `nersc-workflow` about pairing it
+with `nodes_per_block=N, max_blocks=1`. Don't mix the two shapes.
+
 ### Picking `workers_per_node`
 
 - **On a laptop**: 1–4 depending on cores and solver size.
-- **On a NERSC GPU node**: bounded by GPU memory if each run needs its own JAX/CUDA process; usually 1–4 per node. Ask the user if unsure.
+- **On a NERSC GPU node**: one worker per GPU (`available_accelerators=4`) is the default — see the canonical multi-node config above. More than one run per GPU only if each is small enough to share VRAM.
 - **CPU node**: ~32–64 per node, but verify the solver isn't itself multi-threaded.
 
-For scans larger than fits in one node, the user has moved beyond LocalProvider — tell them and ask before swapping to `SlurmProvider`.
+Scaling past one node does **not** require `SlurmProvider` — use the multi-node
+`LocalProvider` config above inside an N-node allocation. Reach for `SlurmProvider` only when
+the scan itself should submit and own its jobs (and then don't hardcode the account: read it
+from `~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU`).
 
 ---
 
