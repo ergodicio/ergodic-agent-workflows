@@ -51,13 +51,19 @@ Bounded roots on Perlmutter that are almost always what you actually wanted:
 - Keep writes inside the working directory you were pointed at (`$HOME` or `$SCRATCH`).
   If the files to edit live on `$CFS`, copy them to a fresh working directory on `$HOME`
   or `$SCRATCH` and work there.
-- **One sanctioned exception:** the per-user venv subtree
-  `/global/common/software/<project>/$USER/` (`$EC_SOFTWARE_ROOT/$USER/`), written only by
-  the documented venv step and only from a **login node**. `$SCRATCH` purges after 8 weeks
-  of no access, so venvs and uv-managed Pythons have to live somewhere persistent, and
-  global common is read-only from compute nodes so a job cannot write it. Stay inside
-  `$USER/` — never write elsewhere under the project's global common (it is shared with
-  teammates), and never from inside `salloc`/`srun`.
+- **Python environments are the documented exception, and belong on global common.** Do not
+  "fix" a venv under `/global/common/software/<project>/$USER/` by relocating it to `$HOME`
+  or `$SCRATCH`. NERSC's own
+  [Python guidance](https://docs.nersc.gov/development/languages/python/nersc-python/)
+  recommends installing environments used by parallel applications to
+  `/global/common/software/<project>` — for import performance and, explicitly, to avoid
+  causing filesystem slowdowns for other users; their Python FAQ prescribes moving a stack
+  there to fix metadata timeouts at scale. `$SCRATCH` would also purge it after 8 weeks.
+  The write-scope rule above is about an agent's blast radius on *data*, not about where a
+  software stack lives; these are different concerns and the Python guidance wins here.
+- Bounds that keep that safe: write only inside `$USER/`, never elsewhere under the
+  project's global common (it is shared with teammates), and only from a **login node** —
+  global common is read-only from compute, so never from inside `salloc`/`srun`.
 - Never put credentials, tokens, or private keys into a prompt, a commit, a log line, or a
   command line. On Perlmutter they are read from files (`~/.mlflow_credentials`,
   `~/.ssh/*-deploy`) by the launch scripts — keep it that way.

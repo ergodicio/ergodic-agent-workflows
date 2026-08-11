@@ -147,7 +147,9 @@ The `nersc-workflow` skill assumes:
 
 Run `scripts/ops/show-config.sh` to see what those resolve to for you.
 
-`$PSCRATCH` is fast but [purges after 8 weeks of no access](https://docs.nersc.gov/filesystems/perlmutter-scratch/) — that's fine for run outputs and the uv download cache (pull what you need back to your laptop), but it's why the venv and uv-managed Pythons live under `/global/common/software/<project>/` instead.
+The venv and uv-managed Pythons live under `/global/common/software/<project>/` because that's [what NERSC recommends for Python environments used by parallel applications](https://docs.nersc.gov/development/languages/python/nersc-python/) — faster imports, and it keeps a many-small-files stack off the filesystems whose metadata load slows the machine down for everyone else (their Python FAQ prescribes moving a stack there to fix mpi4py metadata timeouts at scale). It also survives: `$PSCRATCH` is fast but [purges after 8 weeks of no access](https://docs.nersc.gov/filesystems/perlmutter-scratch/), which is fine for run outputs and the uv download cache (pull what you need back to your laptop) but not for an environment.
+
+Note this cuts against the "keep agent writes in `$HOME`/`$SCRATCH`" line on NERSC's coding-agent page — that advice is about an agent's blast radius on data, not about where a software stack belongs. `rules/nersc-agent-rules.md` records which one wins here and why, so an agent doesn't try to "fix" the venv location.
 
 ### Which project gets billed
 
