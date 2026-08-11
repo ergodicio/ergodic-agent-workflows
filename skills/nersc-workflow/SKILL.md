@@ -580,9 +580,15 @@ that case:
 - `bootstrap-nersc.sh` installs the same `rules/nersc-agent-rules.md` block into
   `~/.claude/CLAUDE.md` on Perlmutter. If it's missing there, run
   `scripts/install-agent-rules.sh` before working.
-- Login nodes are shared and policed: no builds, no long jobs, no traversals. Anything
+- Login nodes are shared and policed: no traversals, no long compute, nothing heavy left
+  running unattended — busy login-resident processes get SIGTERM'd at random. Anything
   computationally substantial goes through an allocation
   (`interactive-cpu.sh` / `interactive-gpu.sh`).
+- **Two things that must live on a login node anyway**, because they can't run elsewhere:
+  the `uv` venv install (3–10 min the first time — global common is read-only on compute)
+  and a multi-node parsl driver (which must not hold a job step — see the EXCEPTION above;
+  it's near-idle, so it's a poor policing target). Both are attended: watch them rather
+  than walking away. Everything else goes to a compute node.
 
 ## Iteration workflow
 

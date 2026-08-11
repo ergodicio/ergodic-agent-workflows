@@ -51,6 +51,13 @@ Bounded roots on Perlmutter that are almost always what you actually wanted:
 - Keep writes inside the working directory you were pointed at (`$HOME` or `$SCRATCH`).
   If the files to edit live on `$CFS`, copy them to a fresh working directory on `$HOME`
   or `$SCRATCH` and work there.
+- **One sanctioned exception:** the per-user venv subtree
+  `/global/common/software/<project>/$USER/` (`$EC_SOFTWARE_ROOT/$USER/`), written only by
+  the documented venv step and only from a **login node**. `$SCRATCH` purges after 8 weeks
+  of no access, so venvs and uv-managed Pythons have to live somewhere persistent, and
+  global common is read-only from compute nodes so a job cannot write it. Stay inside
+  `$USER/` — never write elsewhere under the project's global common (it is shared with
+  teammates), and never from inside `salloc`/`srun`.
 - Never put credentials, tokens, or private keys into a prompt, a commit, a log line, or a
   command line. On Perlmutter they are read from files (`~/.mlflow_credentials`,
   `~/.ssh/*-deploy`) by the launch scripts — keep it that way.
