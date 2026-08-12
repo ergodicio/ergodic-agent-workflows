@@ -433,7 +433,8 @@ Two traps worth stating plainly:
   you run a bigger one." The full distribution function is allocated on the default device and
   the state `diffrax` carries stays a global array, so a 4-GPU run must still fit on **one**
   card. It buys throughput only. Distributing memory takes the multi-node jax.distributed
-  path (see "Multi-node sharded run" above) — mechanism verified, adept integration pending.
+  path (see "Multi-node sharded run" above), which is working — via a wrapper around the
+  solve in vp-turbulence, with adept itself unchanged.
 - **A peak measured on a small case does not generalize.** 23.8 GB at `nx=8192` (55% of a 40 GB
   A100) does not license dropping `hbm80g` for `nx=32768` — those members needed 29–34 GiB
   single allocations and OOM'd. Measure the member you intend to run.
