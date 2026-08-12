@@ -289,10 +289,57 @@ unchanged, and GSPMD's cross-node all-to-all runs at the Slingshot NIC ceiling. 
 test + measured numbers live in vp-turbulence: `scripts/run/smoke_multinode.py` and
 `workdir/smoke-multinode.sbatch`.
 
-**Status: adept itself is NOT yet multi-node capable.** The pushers' meshes would work
-as-is, but `init_state_and_args` materializes the state single-process, the SubSaveAt
-save path can't handle non-fully-addressable arrays, and MLflow/netcdf writes are
-unguarded. Until that integration lands, this recipe is for hand-rolled jax code only.
+**Status: WORKING for vp-turbulence, adept untouched** (verified 2026-08-12 end to
+end, including a production merger-scan member). The reference implementation is
+`vp-turbulence/vp_turbulence/multinode.py` + `scripts/run/run_two_stream_multinode.py`
+(same `--cfg`/`--test` interface as the single-node runner; without srun it runs
+single-process) + `workdir/multinode.sbatch` (batch template, `CFG=...` via
+`--export`). adept needs no changes because its pushers already build their mesh over
+`jax.devices()` — global once distributed init runs. Everything multi-process actually
+changes sits AROUND the solve, and porting it to another adept project means copying
+`multinode.py` and swapping the module class.
+
+**Requires jax >= 0.10.2, as a coherent set.** On jax 0.9.0.1 + Perlmutter's CUDA 13
+driver, any sharded solve whose distribution function reaches ~1.5-2 GiB returns every
+output with `.sharding = UnspecifiedValue` — structurally unreadable, the run's output
+is lost at save time (root-caused in vp-turbulence, see its pyproject and
+`scripts/analysis/repro_unspecified.py`). Keep jax/jaxlib/jax-cuda12-plugin/
+jax-cuda12-pjrt at ONE version: sequential `uv pip install -U` calls can leave the
+plugin a minor version ahead, which silently drops the cusparse FFI handler the
+Fokker-Planck tridiagonal solve needs (`NOT_FOUND: cusparse_gtsv2_ffi`). A fresh venv
+build from pyproject resolves coherently; piecemeal upgrades are where this bites.
+
+**The three multi-process rules** (each one cost a failed run to learn):
+
+1. *State must be built as global arrays, and never via device_put.* Multi-process
+   `jax.device_put(host_array, <global sharding>)` VALIDATES the value is identical on
+   every process by gathering one copy per process onto device — 16 x 2.1 GiB = 32 GiB
+   OOM at the truth grid. `jax.make_array_from_callback(shape, sharding, lambda idx:
+   host[idx])` does no such check and materializes only each process's own shards.
+   `shard_state()` in multinode.py rebuilds the module's state this way after the
+   normal `init_state_and_args` (which runs identically everywhere — it all derives
+   from cfg, seeds included).
+2. *Nothing global may be closed over.* Multi-process jax refuses jit closures over
+   non-fully-addressable arrays ("Please pass such arrays as arguments"), and adept
+   modules read `y0` off `self.state` — i.e. filter_jit would close over it. The
+   runner swaps the state in as a traced argument with a three-line shim
+   (`_solve(state, mods, args): m.state = state; return m(mods, args)`).
+3. *Gathers are collectives; I/O is rank 0's.* `np.asarray` raises on
+   non-fully-addressable outputs, so ys/ts leaves are gathered with
+   `multihost_utils.process_allgather(x, tiled=True)` — by EVERY process, in the same
+   deterministic tree order — and only then does process 0 alone run post_process,
+   netcdf, plots, and MLflow (reusing adept's own `patched_mlflow`, `log_params`,
+   `robust_log_artifacts`, so runs look identical to ergoExo's). A collective inside a
+   rank-guarded branch hangs the job; keep the gather outside the guard.
+
+**Production flow that worked** (merger member L8000-t1200, 32768x2048, 240k steps):
+generate the member config with the scan's own `apply_member()` (never hand-copy the
+save-tier plumbing), then — because there is NO checkpoint/restart — measure before
+committing to a walltime: run ~1000 steps and ~2000 steps of the real config and
+difference the wall times to cancel compile (44.4 ms/step for that member on 16 GPUs;
+1000-step probe alone over-reads by ~35%). Only launch if steps x ms/step fits the
+window with >= 30 min margin. Detach the srun with `nohup` and log to a file — an
+expired sshproxy cert mid-run then costs only visibility, not the run.
 
 **Launch (proven):** allocation with `--ntasks-per-node=4 --gpus-per-node=4
 --cpus-per-task=32`; run `srun --ntasks-per-node=4 --gpus-per-node=4 python -u <script>`
@@ -331,9 +378,11 @@ and write big arrays per-shard from `x.addressable_shards`.
 **Measured (f64, 16 GPUs / 4 nodes):** the x<->v transpose pair — one Vlasov step's
 communication load — costs 22.4 ms at 32768x8192 (2.15 GB state; bare all-to-all 7.2 ms,
 281 GB/s aggregate ≈ 70 GB/s/node ≈ the 4x25 GB/s NIC ceiling) and 87.6 ms at
-131072x8192 (8.6 GB — a state that cannot fit one 40 GB card with save buffers). Compare
-~103 ms/full-step for the truth run on one node: communication does not dominate, and
-aggregate HBM (640 GB across 4 nodes) is the real prize.
+131072x8192 (8.6 GB — a state that cannot fit one 40 GB card with save buffers).
+End-to-end full solver (jax 0.10.2): 32768x8192 runs at <= 179 ms/step on 16 GPUs vs
+358 ms/step on one node — a >= 2x speedup — with the physics matching the single-node
+result bit-for-bit; 32768x2048 (merger members) runs at 44.4 ms/step. Communication
+does not dominate, and aggregate HBM (640 GB across 4 nodes) is the real prize.
 
 ### Picking `workers_per_node`
 
