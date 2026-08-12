@@ -276,8 +276,113 @@ above gives one *independent* run per GPU, which is what a scan wants. For a sin
 change only the accelerator spec to a grouped list, `available_accelerators=["0,1,2,3"]`
 (verified 2026-08-11: one manager per node, `Accelerators: 0,1,2,3`, one 4-GPU worker each).
 Both layouts run on `nodes_per_block=1, max_blocks=nodes` — there is no second provider shape
-to remember, and **don't** add `--ntasks-per-node 1` to the launcher overrides. Sharding buys
-throughput, not memory: see "Probe device memory" below.
+to remember, and **don't** add `--ntasks-per-node 1` to the launcher overrides. Within one
+process, sharding buys throughput, not memory: see "Probe device memory" below. To actually
+distribute memory, you need the multi-node sharded run below.
+
+### Multi-node sharded run — ONE simulation across N nodes (jax.distributed)
+
+The mechanism is **verified on Perlmutter** (2026-08-11, 4 nodes x 4 A100 = 16 GPUs):
+after `jax.distributed.initialize()`, `jax.devices()` returns all 16 devices
+node-contiguously, `Mesh(np.array(jax.devices()), ("device",))` + `shard_map` compile
+unchanged, and GSPMD's cross-node all-to-all runs at the Slingshot NIC ceiling. Smoke
+test + measured numbers live in vp-turbulence: `scripts/run/smoke_multinode.py` and
+`workdir/smoke-multinode.sbatch`.
+
+**Status: WORKING for vp-turbulence, adept untouched** (verified 2026-08-12 end to
+end, including a production merger-scan member). The reference implementation is
+`vp-turbulence/vp_turbulence/multinode.py` + `scripts/run/run_two_stream_multinode.py`
+(same `--cfg`/`--test` interface as the single-node runner; without srun it runs
+single-process) + `workdir/multinode.sbatch` (batch template, `CFG=...` via
+`--export`). adept needs no changes because its pushers already build their mesh over
+`jax.devices()` — global once distributed init runs. Everything multi-process actually
+changes sits AROUND the solve, and porting it to another adept project means copying
+`multinode.py` and swapping the module class.
+
+**Requires jax >= 0.10.2, as a coherent set.** On jax 0.9.0.1 + Perlmutter's CUDA 13
+driver, any sharded solve whose distribution function reaches ~1.5-2 GiB returns every
+output with `.sharding = UnspecifiedValue` — structurally unreadable, the run's output
+is lost at save time (root-caused in vp-turbulence, see its pyproject and
+`scripts/analysis/repro_unspecified.py`). Keep jax/jaxlib/jax-cuda12-plugin/
+jax-cuda12-pjrt at ONE version: sequential `uv pip install -U` calls can leave the
+plugin a minor version ahead, which silently drops the cusparse FFI handler the
+Fokker-Planck tridiagonal solve needs (`NOT_FOUND: cusparse_gtsv2_ffi`). A fresh venv
+build from pyproject resolves coherently; piecemeal upgrades are where this bites.
+
+**The three multi-process rules** (each one cost a failed run to learn):
+
+1. *State must be built as global arrays, and never via device_put.* Multi-process
+   `jax.device_put(host_array, <global sharding>)` VALIDATES the value is identical on
+   every process by gathering one copy per process onto device — 16 x 2.1 GiB = 32 GiB
+   OOM at the truth grid. `jax.make_array_from_callback(shape, sharding, lambda idx:
+   host[idx])` does no such check and materializes only each process's own shards.
+   `shard_state()` in multinode.py rebuilds the module's state this way after the
+   normal `init_state_and_args` (which runs identically everywhere — it all derives
+   from cfg, seeds included).
+2. *Nothing global may be closed over.* Multi-process jax refuses jit closures over
+   non-fully-addressable arrays ("Please pass such arrays as arguments"), and adept
+   modules read `y0` off `self.state` — i.e. filter_jit would close over it. The
+   runner swaps the state in as a traced argument with a three-line shim
+   (`_solve(state, mods, args): m.state = state; return m(mods, args)`).
+3. *Gathers are collectives; I/O is rank 0's.* `np.asarray` raises on
+   non-fully-addressable outputs, so ys/ts leaves are gathered with
+   `multihost_utils.process_allgather(x, tiled=True)` — by EVERY process, in the same
+   deterministic tree order — and only then does process 0 alone run post_process,
+   netcdf, plots, and MLflow (reusing adept's own `patched_mlflow`, `log_params`,
+   `robust_log_artifacts`, so runs look identical to ergoExo's). A collective inside a
+   rank-guarded branch hangs the job; keep the gather outside the guard.
+
+**Production flow that worked** (merger member L8000-t1200, 32768x2048, 240k steps):
+generate the member config with the scan's own `apply_member()` (never hand-copy the
+save-tier plumbing), then — because there is NO checkpoint/restart — measure before
+committing to a walltime: run ~1000 steps and ~2000 steps of the real config and
+difference the wall times to cancel compile (44.4 ms/step for that member on 16 GPUs;
+1000-step probe alone over-reads by ~35%). Only launch if steps x ms/step fits the
+window with >= 30 min margin. Detach the srun with `nohup` and log to a file — an
+expired sshproxy cert mid-run then costs only visibility, not the run.
+
+**Launch (proven):** allocation with `--ntasks-per-node=4 --gpus-per-node=4
+--cpus-per-task=32`; run `srun --ntasks-per-node=4 --gpus-per-node=4 python -u <script>`
+— one task per GPU, each process calling
+`jax.distributed.initialize(local_device_ids=[int(os.environ["SLURM_LOCALID"])])` before
+any other JAX call. **Not `--gpus-per-task`**: its per-task cgroup hides the other GPUs
+and breaks NVLink P2P between same-node ranks.
+
+**NCCL over Slingshot — plugin dir only, no `module load nccl`.** The module would
+shadow the venv's newer pip NCCL (2.29.3 vs 2.24.3) and drags in `cudatoolkit`, which
+conflicts with jax's pip CUDA (see `worker_init` above). Take only the plugin and the
+module's env (from `module show nccl/2.24.3`):
+
+```bash
+export LD_LIBRARY_PATH="/global/common/software/nersc9/nccl/2.24.3/plugin/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export NCCL_SOCKET_IFNAME=hsn
+export NCCL_NET="AWS Libfabric"
+export NCCL_NET_GDR_LEVEL=PHB
+export FI_CXI_DISABLE_HOST_REGISTER=1
+```
+
+Verify in the log (`NCCL_DEBUG=INFO`, `NCCL_DEBUG_SUBSYS=INIT,NET`): "Loaded net plugin
+AWS Libfabric" — a run that says "Using network Socket" is on TCP fallback and every
+timing from it is garbage.
+
+**The trap that costs a job:** `jax.device_put(host_array, <non-fully-addressable
+sharding>)` silently *validates* the value is identical on every process by gathering it
+— one copy per process stacked on device, so a 2.1 GB array x 16 processes attempted a
+32 GiB allocation and OOM'd. Materialize global state with
+`jax.make_array_from_callback(shape, sharding, lambda idx: host_array[idx])` (no
+cross-host check, each process builds only its own shards). Same class of trap on the way
+out: `np.asarray` on a non-fully-addressable array raises — gather small diagnostics via
+on-device replication (`process_allgather(x, tiled=True)` on the *global* array is fine),
+and write big arrays per-shard from `x.addressable_shards`.
+
+**Measured (f64, 16 GPUs / 4 nodes):** the x<->v transpose pair — one Vlasov step's
+communication load — costs 22.4 ms at 32768x8192 (2.15 GB state; bare all-to-all 7.2 ms,
+281 GB/s aggregate ≈ 70 GB/s/node ≈ the 4x25 GB/s NIC ceiling) and 87.6 ms at
+131072x8192 (8.6 GB — a state that cannot fit one 40 GB card with save buffers).
+End-to-end full solver (jax 0.10.2): 32768x8192 runs at <= 179 ms/step on 16 GPUs vs
+358 ms/step on one node — a >= 2x speedup — with the physics matching the single-node
+result bit-for-bit; 32768x2048 (merger members) runs at 44.4 ms/step. Communication
+does not dominate, and aggregate HBM (640 GB across 4 nodes) is the real prize.
 
 ### Picking `workers_per_node`
 
@@ -323,11 +428,13 @@ allocation.
 
 Two traps worth stating plainly:
 
-- **Sharding one run across 4 GPUs does not reduce its memory.** adept's `grid.parallel` is
-  explicit: "one process, one node, no distributed memory… it does not let you run a bigger
-  one." The full distribution function is allocated on the default device and the state
-  `diffrax` carries stays a global array, so a 4-GPU run must still fit on **one** card. It buys
-  throughput only.
+- **Sharding one run across 4 GPUs in a single process does not reduce its memory.** adept's
+  `grid.parallel` is explicit: "one process, one node, no distributed memory… it does not let
+  you run a bigger one." The full distribution function is allocated on the default device and
+  the state `diffrax` carries stays a global array, so a 4-GPU run must still fit on **one**
+  card. It buys throughput only. Distributing memory takes the multi-node jax.distributed
+  path (see "Multi-node sharded run" above), which is working — via a wrapper around the
+  solve in vp-turbulence, with adept itself unchanged.
 - **A peak measured on a small case does not generalize.** 23.8 GB at `nx=8192` (55% of a 40 GB
   A100) does not license dropping `hbm80g` for `nx=32768` — those members needed 29–34 GiB
   single allocations and OOM'd. Measure the member you intend to run.
