@@ -99,16 +99,24 @@ For sweeping a parameter (or grid of parameters), use [parsl](https://parsl.read
 > node-melt into an instant, obvious failure:
 >
 > ```python
+> import os
 > import socket
 >
+> # Gate on NERSC_HOST so the same script still runs on a laptop, where there is no
+> # compute node to be on. Perlmutter compute nodes are nid<digits>; login nodes are login<n>.
+> def _on_nersc_login() -> str | None:
+>     host = socket.gethostname()
+>     if os.environ.get("NERSC_HOST") and not host.startswith("nid"):
+>         return host
+>     return None
+>
 > # in the driver, before dispatching any futures
-> host = socket.gethostname()
-> if not host.startswith("nid"):          # Perlmutter compute nodes are nid<digits>
+> if host := _on_nersc_login():
 >     raise SystemExit(f"refusing to start: driver on {host!r}, not a compute node")
 >
 > # and inside the parsl app itself, as a backstop
-> if not socket.gethostname().startswith("nid"):
->     return {"status": f"refused: worker on non-compute node {socket.gethostname()!r}"}
+> if host := _on_nersc_login():
+>     return {"status": f"refused: worker on non-compute node {host!r}"}
 > ```
 >
 > **Verify within 60 s of every launch**, before walking away — the interchange log records
@@ -466,14 +474,23 @@ Config(executors=[HighThroughputExecutor(
 ```
 
 Launch it with the driver **on the node** (see the ⚠️ box above) — `LocalProvider` with the
-default launcher is then correct and no `SrunLauncher` is needed:
+default launcher is then correct and no `SrunLauncher` is needed. **This is a one-node
+recipe**: the default launcher only ever fills the driver's own node, so allocating more than
+one node here leaves the rest idle. For a genuine multi-node scan use the `SrunLauncher`
+config above instead.
 
 ```bash
-~/.claude/scripts/ergodic/interactive-cpu.sh 2 1        # prints <JOBID>; leaves you on login
-ssh perlmutter "cd \$PSCRATCH/<repo> && nohup srun --overlap --jobid=<JOBID> \
-    -N1 -n1 -c 128 --cpu-bind=none bash -lc '<activate…> python -u scripts/<scan>.py \
-    --n_workers 64' > scan.log 2>&1 &"
+# 2 h, 1 node; prints a squeue line — take the JOBID from it. You are left on a login node.
+~/.claude/scripts/ergodic/interactive-cpu.sh 2 1
+ssh perlmutter "cd \$PSCRATCH/<repo> && mkdir -p workdir && nohup setsid srun --overlap \
+    --jobid=<JOBID> -N1 -n1 -c 128 --cpu-bind=none bash -lc '<activate…> \
+    python -u scripts/<scan>.py --n_workers 64' \
+    > \$PSCRATCH/<repo>/workdir/scan-<JOBID>.log 2>&1 < /dev/null &"
 ```
+
+Detached remotely, logging to `workdir/`, for the reasons the `nersc-workflow` skill gives:
+a locally-detached `ssh` takes the step down with your session, and anything written outside
+`workdir/` is deleted by the next `sync-up --delete`.
 
 `--cpu-bind=none` matters: without it the driver's step binds to a subset of CPUs and its
 worker children inherit that binding, so 64 workers land on a handful of cores.
