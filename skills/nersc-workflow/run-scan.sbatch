@@ -17,7 +17,22 @@
 # can't kill the driver mid-run. No setsid/nohup needed.
 #
 # NOTE: the driver is deliberately NOT wrapped in an outer srun — parsl's SrunLauncher
-# does its own `srun --overlap` to the allocated nodes; an outer srun would collide.
+# does its own internal srun to the allocated nodes; an outer srun would collide.
+# (Parsl's internal srun is plain `srun --ntasks N -l <overrides>` — no --overlap;
+# verified 2026-07-21 against archived runinfo submit scripts, parsl 2026.6.1.)
+#
+# WORKER-PLACEMENT TRAP (diagnosed 2026-07-21): parsl's srun takes its node count
+# from the INHERITED SLURM env when not told explicitly. If the driver runs inside
+# a 1-node step — e.g. launched with `srun --jobid=<id> --overlap -N1 -n1` into a
+# parked (--no-shell) allocation — the step env carries SLURM_NNODES=1 and the
+# worker srun packs ALL managers onto ONE node (4 runs/GPU, other nodes idle,
+# ~4x slowdown; --ntasks-per-node is silently ignored). sbatch/salloc-one-shot
+# drivers get the full job env and are safe, but make the placement explicit
+# anyway: put the node count in the overrides —
+#   SrunLauncher(overrides=f"--nodes {nodes} --ntasks-per-node 1 --gpus-per-node 4")
+# and after ANY launcher/launch-style change, verify spread:
+#   grep -ho "hostname.: .nid[0-9]*" runinfo/<latest>/*/interchange.log | sort | uniq -c
+# must list as many distinct worker nodes as the allocation has.
 
 # (no --job-name here: submit-batch.sh sets `-J <repo>` from your repo basename, so the
 #  job + its workdir/%x-... log are named after whatever project you run this from.
@@ -51,4 +66,4 @@ export PYTHONPATH="$SLURM_SUBMIT_DIR"
 cd "$SLURM_SUBMIT_DIR"
 
 echo "[run-scan.sbatch] job=$SLURM_JOB_ID host=$(hostname) nodes=$SLURM_NNODES driver=$DRIVER"
-python -u "$DRIVER"                         # parsl does the internal srun --overlap; NO outer srun
+python -u "$DRIVER"                         # parsl does the internal srun (no --overlap); NO outer srun
