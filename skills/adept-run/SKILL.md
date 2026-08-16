@@ -63,9 +63,68 @@ If the user asks "run a simulation" / "launch adept" / similar, default to one o
 
 For sweeping a parameter (or grid of parameters), use [parsl](https://parsl.readthedocs.io/) with `LocalProvider`. Reasons:
 
-- `LocalProvider` launches workers within whatever resource you've already been given (your laptop, or a NERSC compute node inside `salloc`), so the same scan script runs both on a laptop CPU and on a Perlmutter GPU node without modification.
+- `LocalProvider` uses resources you already hold rather than submitting its own jobs, so the same scan script runs on a laptop and inside a Perlmutter allocation without modification.
 - It composes cleanly with `ergoExo` — each parsl task just calls `ergoExo`, so MLflow logging still happens per-run.
 - It avoids the complexity of `SlurmProvider` / `KubernetesProvider` until the user explicitly needs multi-node scale-out.
+
+> ### ⚠️ `LocalProvider` puts workers where the DRIVER runs — not "in the allocation"
+>
+> This is the single easiest way to melt a login node, and it fails **silently**: the scan
+> runs, tasks complete, results look fine. Holding an allocation is irrelevant; exporting
+> `SLURM_JOB_ID` is irrelevant. `LocalProvider`'s default launcher (`SingleNodeLauncher`)
+> forks the worker pool as a **child of the driver process**, so the workers inherit
+> whatever node the driver is sitting on.
+>
+> **Provider and launcher are orthogonal axes.** `LocalProvider` is nearly always the right
+> *provider*. What you must then get right is *where the driver runs*:
+>
+> | driver runs on | launcher | correct? |
+> |---|---|---|
+> | compute node (`srun`'d in, or an `sbatch` body) | default `SingleNodeLauncher` | ✅ workers on the compute node |
+> | login node (`salloc --no-shell` + `SLURM_JOB_ID`) | default `SingleNodeLauncher` | ❌ **every worker on the login node** |
+> | login node (`salloc --no-shell` + `SLURM_JOB_ID`) | `SrunLauncher(...)` | ✅ workers pushed into the allocation |
+>
+> Both ✅ rows are valid; they are two different, self-consistent patterns. The failure is
+> **mixing them** — taking the login-node driver placement from the multi-node GPU example
+> below while keeping the launcher-less provider from the single-node template above. That
+> is the ❌ row, and it looks exactly like the ✅ rows until you check hostnames.
+>
+> **`interactive-cpu.sh` / `interactive-gpu*.sh` use `salloc --no-shell`**, so they never
+> give you a shell on the compute node. After running one you are on a **login node**, which
+> means you must either `srun` the driver in, or add `SrunLauncher`. Measured 2026-08-16:
+> a 64-worker CPU scan launched this way put 64 JAX processes on `login28` and drove its
+> load average from ~6 to **122** for several minutes, while the allocated node sat idle.
+>
+> **Guard it in code — don't rely on remembering.** Cheap, and it converts a silent
+> node-melt into an instant, obvious failure:
+>
+> ```python
+> import os
+> import socket
+>
+> # Gate on NERSC_HOST so the same script still runs on a laptop, where there is no
+> # compute node to be on. Perlmutter compute nodes are nid<digits>; login nodes are login<n>.
+> def _on_nersc_login() -> str | None:
+>     host = socket.gethostname()
+>     if os.environ.get("NERSC_HOST") and not host.startswith("nid"):
+>         return host
+>     return None
+>
+> # in the driver, before dispatching any futures
+> if host := _on_nersc_login():
+>     raise SystemExit(f"refusing to start: driver on {host!r}, not a compute node")
+>
+> # and inside the parsl app itself, as a backstop
+> if host := _on_nersc_login():
+>     return {"status": f"refused: worker on non-compute node {host!r}"}
+> ```
+>
+> **Verify within 60 s of every launch**, before walking away — the interchange log records
+> the manager's hostname explicitly:
+>
+> ```bash
+> grep -o "'hostname': '[^']*'" runinfo/*/*/interchange.log | sort -u   # must be nid*, never login*
+> ```
 
 ### Starter template
 
@@ -388,7 +447,56 @@ does not dominate, and aggregate HBM (640 GB across 4 nodes) is the real prize.
 
 - **On a laptop**: 1–4 depending on cores and solver size.
 - **On a NERSC GPU node**: one worker per GPU (`available_accelerators=4`) is the default — see the canonical multi-node config above. More than one run per GPU only if each is small enough to share VRAM.
-- **CPU node**: ~32–64 per node, but verify the solver isn't itself multi-threaded.
+- **CPU node**: ~32–64 per node — but JAX-on-CPU **is** multi-threaded, so see below.
+
+### CPU-node scan — pin the threads or everything crawls
+
+A Perlmutter CPU node is 128 physical cores, and JAX-on-CPU grabs **all visible cores per
+process** by default. 64 unconstrained workers is therefore a 64× oversubscription: the node
+thrashes on context switches and every run is slower than it would be serially. For the small
+1-D solves a scan is usually made of, XLA's intra-op threading buys nothing anyway, so pin
+each worker to one thread and let parallelism come from the worker count.
+
+```python
+single_thread = (
+    "export JAX_PLATFORMS=cpu; "
+    "export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; export OPENBLAS_NUM_THREADS=1; "
+    'export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"; '
+    "source $ECLAUDE_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
+)
+
+Config(executors=[HighThroughputExecutor(
+    label="cpu-scan",
+    max_workers_per_node=64,
+    cpu_affinity="block",                       # keep each worker on its own cores
+    provider=LocalProvider(init_blocks=1, max_blocks=1, worker_init=single_thread),
+)])
+```
+
+Launch it with the driver **on the node** (see the ⚠️ box above) — `LocalProvider` with the
+default launcher is then correct and no `SrunLauncher` is needed. **This is a one-node
+recipe**: the default launcher only ever fills the driver's own node, so allocating more than
+one node here leaves the rest idle. For a genuine multi-node scan use the `SrunLauncher`
+config above instead.
+
+```bash
+# 2 h, 1 node; prints a squeue line — take the JOBID from it. You are left on a login node.
+~/.claude/scripts/ergodic/interactive-cpu.sh 2 1
+ssh perlmutter "cd \$PSCRATCH/<repo> && mkdir -p workdir && nohup setsid srun --overlap \
+    --jobid=<JOBID> -N1 -n1 -c 128 --cpu-bind=none bash -lc '<activate…> \
+    python -u scripts/<scan>.py --n_workers 64' \
+    > \$PSCRATCH/<repo>/workdir/scan-<JOBID>.log 2>&1 < /dev/null &"
+```
+
+Detached remotely, logging to `workdir/`, for the reasons the `nersc-workflow` skill gives:
+a locally-detached `ssh` takes the step down with your session, and anything written outside
+`workdir/` is deleted by the next `sync-up --delete`.
+
+`--cpu-bind=none` matters: without it the driver's step binds to a subset of CPUs and its
+worker children inherit that binding, so 64 workers land on a handful of cores.
+
+Measured 2026-08-16 (lagradept 1-D rad-hydro, nr=256, radiation on): **189 s per run**
+single-threaded, so a 512-point grid at 64 workers is ~25 min on one node.
 
 Scaling past one node does **not** require `SlurmProvider` — use the multi-node
 `LocalProvider` config above inside an N-node allocation. Reach for `SlurmProvider` only when
