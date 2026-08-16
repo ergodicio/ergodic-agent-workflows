@@ -370,6 +370,14 @@ ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc
 > | interactive (`salloc --no-shell`) | **login node**, with `SLURM_JOB_ID=<jobid>` exported, backgrounded with `nohup` |
 > | batch (`sbatch`) | the sbatch body **directly** — no `srun` wrapper |
 >
+> **The login-node row assumes a `SrunLauncher` in the provider.** It is the launcher, not
+> the allocation, that puts workers on compute nodes: a launcher-less `LocalProvider` forks
+> its worker pool as a *child of the driver*, so from a login node every worker runs **on the
+> login node** while your allocation sits idle — silently, with correct results (measured
+> 2026-08-16: 64 JAX workers took `login28` from load ~6 to 122; the only tell was
+> `'hostname': 'login28'` in `interchange.log`). See the `adept-run` skill for the full
+> driver-placement × launcher table.
+>
 > ```bash
 > # interactive: allocate, then drive from the login node
 > REPO=$(basename "$PWD")            # from a worktree, set this to the real repo name — see Conventions
@@ -399,8 +407,6 @@ ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc
 >
 > Observed 2026-08-11 on Perlmutter (parsl 2026.02.16): srun-wrapped driver → 0 workers on
 > 4 nodes; login-node driver, same provider config → 4 managers, 16 workers, 0 bind errors.
-
-For a run that may exceed the 4 h interactive cap, use **`sbatch`** instead (below).
 
 ### Multi-node alternative: sbatch (no detach)
 
@@ -448,12 +454,14 @@ JOBID=<id from squeue>
 ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid srun --jobid=${JOBID} --overlap bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-${JOBID}.log 2>&1 < /dev/null &"
 ```
 
-Detach the attach the same way as the one-shot (remote `nohup setsid`, log on `workdir/`): a parked allocation is owned by SLURM with no client anywhere, so a dead attach client only costs the current *step* — the allocation survives and you re-attach (make the driver idempotent, e.g. a `--skip-done` flag, so a re-attach resumes instead of duplicating). To bill a different project than your configured one for a single launch, prefix the allocator with `EC_ACCOUNT=<account>` (e.g. `EC_ACCOUNT=m4490 interactive-gpu-node.sh 3 2`) — env vars override `~/.config/ergodic-claude/config.sh`, and salloc rejects on node-hour balance if the resolved account can't pay.
+Detach it the same way as the one-shot (remote `nohup setsid`, log on `workdir/`): a parked allocation is owned by SLURM with no client anywhere, so a dead attach client only costs the current *step* — the allocation survives and you re-attach (make the driver idempotent, e.g. a `--skip-done` flag, so a re-attach resumes instead of duplicating). To bill a different project than your configured one for a single launch, prefix the allocator with `EC_ACCOUNT=<account>` (e.g. `EC_ACCOUNT=m4490 interactive-gpu-node.sh 3 2`) — env vars override `~/.config/ergodic-claude/config.sh`, and salloc rejects on node-hour balance if the resolved account can't pay.
 
-**MULTI-NODE parsl drivers must NOT be launched into a parked allocation this way without an env scrub.** (Scope: this warning is for the block-spanning parsl shape, `nodes_per_block=N, max_blocks=1`, where the driver legitimately sits in a job step. With the canonical one-block-per-node config, don't put the driver in a step at all — drive from the login node per the EXCEPTION above — and the env-scramble problem never arises.) A driver started via `srun --jobid … -N1 -n1` runs inside a 1-node step whose SLURM env is scrambled (`SLURM_NNODES=1`, `SLURM_JOB_NUM_NODES` empty — probed 2026-07-21). Parsl's internal worker srun inherits it and packs ALL managers onto ONE node (4 runs/GPU, other nodes idle, ~4x slowdown — this silently ruined two 4-node campaign launches before diagnosis; with explicit `--nodes` in the overrides it instead fails loudly with "Only allocated 1 nodes asked for 4"). Fix, verified end-to-end: scrub the step env in the driver's shell before python, keeping only the job id —
+**MULTI-NODE parsl: do not launch the driver into a parked allocation this way at all.** With the canonical one-block-per-node config (`nodes_per_block=1, max_blocks=nodes` — what every parsl config in these skills now uses) the driver must not occupy a job step: drive it from the **login node** per the EXCEPTION above, and everything below never arises.
+
+*If* you are on the block-spanning shape (`nodes_per_block=N, max_blocks=1`), where the driver legitimately sits in a job step, then the step env has to be scrubbed first. A driver started via `srun --jobid … -N1 -n1` runs inside a 1-node step whose SLURM env is scrambled (`SLURM_NNODES=1`, `SLURM_JOB_NUM_NODES` empty — probed 2026-07-21). Parsl's internal worker srun inherits it and packs ALL managers onto ONE node (4 runs/GPU, other nodes idle, ~4x slowdown — this silently ruined two 4-node campaign launches before diagnosis; with explicit `--nodes` in the overrides it instead fails loudly with "Only allocated 1 nodes asked for 4"). Fix, verified end-to-end: scrub the step env in the driver's shell before python, keeping only the job id and cluster name — and detach it the same way as every other launch here:
 
 ```bash
-ssh perlmutter "srun --jobid=${JOBID} --overlap --nodes=1 --ntasks=1 bash -c 'for v in \$(env | grep -oE \"^SLURM_[A-Z_]+\"); do case \$v in SLURM_JOB_ID|SLURM_CLUSTER_NAME) ;; *) unset \$v;; esac; done; source … && python -u sims/<campaign>/scan.py'"
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid srun --jobid=${JOBID} --overlap --nodes=1 --ntasks=1 bash -c 'for v in \$(env | grep -oE \"^SLURM_[A-Z_]+\"); do case \$v in SLURM_JOB_ID|SLURM_CLUSTER_NAME) ;; *) unset \$v;; esac; done; source … && python -u sims/<campaign>/scan.py' > \$PSCRATCH/${REPO}/workdir/scan-${JOBID}.log 2>&1 < /dev/null &"
 ```
 
 plus explicit node count in the launcher overrides (`SrunLauncher(overrides=f"--nodes {nodes} --ntasks-per-node 1 --gpus-per-node 4")`). After ANY launcher or launch-style change, verify spread before walking away: `grep -ho "hostname.: .nid[0-9]*" runinfo/<latest>/*/interchange.log | sort | uniq -c` must show as many distinct worker nodes as the allocation has. (sbatch and salloc-one-shot drivers get the full job env and don't need the scrub — but the explicit `--nodes` override is cheap insurance everywhere.)
@@ -462,12 +470,13 @@ Notes:
 - `python -u` for unbuffered output (so `tail -f` of the log is responsive).
 - `ergodic-claude.sh` provides `MLFLOW_TRACKING_URI` and (via `~/.mlflow_credentials`) `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`. If those are empty, the user hasn't filled in their credentials yet — point them at `vim ~/.mlflow_credentials` on Perlmutter.
 - For adept (the usual case), the entry point should be `uv run run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking.
-- The `--time=01:00:00` above is a polite default, **not** the cap: `gpu_interactive` allows 4 h (and 4 nodes, 2 submitted jobs — measured 2026-08-11, re-check with `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`). Past 4 h, switch to `--qos=regular`.
+- The `--time=01:00:00` in the one-shot launches above is a polite default, **not** the cap: `gpu_interactive` allows 4 h (and 4 nodes, 2 submitted jobs — measured 2026-08-11, re-check with `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`). Past 4 h, switch to `--qos=regular`.
 
 ### Monitor
 
-**Run log (training stdout — lives on `$PSCRATCH/<repo>/workdir/`, not locally):**
+**Run log (training stdout — lives on `$PSCRATCH/<repo>/workdir/`, not locally).** The name depends on which launch path you used: one-shot → `<repo>-train.log`, parked attach → `<repo>-<jobid>.log`, parsl scan → `scan.log` / `scan-<jobid>.log`, sbatch → `<repo>-<jobid>.out`. List first if you're not sure, then read:
 ```bash
+ssh perlmutter 'ls -t $PSCRATCH/'"$(basename "$PWD")"'/workdir/'
 ~/.claude/scripts/ergodic/read-log.sh workdir/$(basename "$PWD")-train.log
 ```
 
