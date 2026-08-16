@@ -17,7 +17,7 @@ These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-loc
 | Sync cwd → `$PSCRATCH/<repo>/` | `~/.claude/scripts/ergodic/sync-up.sh` |
 | Allocate interactive GPU (1 GPU) | `~/.claude/scripts/ergodic/interactive-gpu.sh [hours] [nodes]` |
 | Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.claude/scripts/ergodic/interactive-gpu-node.sh [hours] [nodes]` |
-| Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.claude/scripts/ergodic/interactive-shared.sh [gpus] [hours]` |
+| Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.claude/scripts/ergodic/interactive-shared.sh [hours] [gpus]` |
 | Allocate interactive CPU node (1-4 nodes) | `~/.claude/scripts/ergodic/interactive-cpu.sh [hours] [nodes]` |
 | Submit a batch job | `~/.claude/scripts/ergodic/submit-batch.sh <sbatch-path>` |
 | Commit-pinned isolated run (checkout SHA → own dir → sbatch) | `~/.claude/scripts/ergodic/launch-pinned.sh [opts] <cfg…>` |
@@ -27,6 +27,13 @@ These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-loc
 | Cat a remote log | `~/.claude/scripts/ergodic/read-log.sh <relpath>` |
 | Grep a remote log | `~/.claude/scripts/ergodic/grep-log.sh <pattern> <relpath>` |
 | Remote git SHA | `~/.claude/scripts/ergodic/remote-sha.sh [subdir]` |
+
+**Every `interactive-*.sh` takes hours first.** The second positional is whatever that
+allocator sizes with — nodes for the whole-node scripts, GPUs for the shared slice. All four
+also accept `--hours` / `--nodes` / `--gpus` in any order, and `--help`; prefer the flags when
+generating a command for the user, since they read back unambiguously in the transcript.
+(`interactive-shared.sh` took `[gpus] [hours]` until 2026-08-16 — if you see that order in an
+older note or script, it is stale.)
 
 Operations not covered by the scripts (venv mutation, custom launch, pulling artifacts back, multi-node launch) still go through inline `ssh perlmutter "…"` as shown below — those need the user to see the full command before approving.
 
@@ -271,7 +278,7 @@ Notes for Claude:
   copies collapse into each other too.
 - Safe by construction: `hardlink` links only sha256-identical files, and uv replaces files
   on install rather than editing in place. Verify anyway — a real op, not just an import.
-  That needs a GPU node, so use `interactive-shared.sh 1 1` (1 GPU, 1 h) and `scancel` when
+  That needs a GPU node, so use `interactive-shared.sh 1 1` (1 h, 1 GPU) and `scancel` when
   done:
   ```bash
   ssh perlmutter "srun --jobid=<JOBID> --overlap bash -lc '\
