@@ -6,8 +6,10 @@
 #   2. Creates the directories the nersc-workflow skill expects:
 #        <project-space>/$USER/venvs/      (per-project venvs)
 #        <project-space>/$USER/uv-python/  (uv-managed Pythons)
+#        <project-space>/$USER/.cache/uv/  (uv download cache — MUST be on the same
+#                                           filesystem as venvs/ or uv copies instead
+#                                           of hardlinking; see the env-file note below)
 #        $PSCRATCH/                                 (working area for synced repos)
-#        $PSCRATCH/uv-cache/                        (uv download cache, on fast scratch)
 #   3. Writes <project-space>/$USER/ergodic-claude.sh with PATH, env vars,
 #      and a cd-hook that points uv at the right per-project venv
 #   4. Adds a single `. <project-space>/$USER/ergodic-claude.sh` line to
