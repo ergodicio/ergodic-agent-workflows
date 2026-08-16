@@ -196,6 +196,94 @@ Notes for Claude:
 - Don't fall back to `pip` or `conda`. If uv fails, surface the error.
 - **Never run this inside `salloc` / `srun`.** Global common is read-only on compute nodes.
 
+### The uv cache must live on global common, next to the venvs
+
+**Check this before diagnosing any "we're out of space on global common" report.** It is
+the usual cause, and it is invisible until you look.
+
+uv hardlinks package files from its cache into a venv, so ten venvs sharing a dependency
+cost one copy on disk. It can only do that **within a single filesystem**. The venvs are on
+`/global/common` (tlcommon); `$PSCRATCH` is Lustre and `$HOME` is `/global/u2` (tlhome2).
+Point the cache at either of those and uv silently falls back to a full copy. No warning
+reaches the user; the venvs just quietly cost 6× what they should.
+
+`bootstrap-nersc.sh` used to do exactly that — it set `UV_CACHE_DIR="${PSCRATCH}/uv-cache"`,
+reasoning that scratch is fast and purgeable. It is, but it is also the wrong filesystem,
+and that one line is what inflated every jax venv in the project. Fixed 2026-08-16; anyone
+whose `ergodic-claude.sh` predates that needs to re-run the bootstrap.
+
+For jax GPU venvs this is brutal, because the CUDA wheels dominate: `site-packages/nvidia`
+is **4.5 GB** of the ~6 GB (cudnn 1.3G, cublas 817M, cusolver 473M, cusparse 465M,
+nccl 454M, nvshmem 335M, cufft 281M). Every venv carries its own identical copy. Measured
+2026-08-16: seven venvs, one user, **38 GB**; after the fix below, **7.8 GB**.
+
+This matters because `/global/common/software/<project>` is a **per-project quota shared by
+every member** — m4490 is capped at 100 GB across all users. One person's duplicated CUDA
+wheels exhaust the quota for the whole team. `showquota` does **not** report this
+filesystem; the only signal is `Disk quota exceeded` on write.
+
+Check where the cache is pointing. **Use `bash -lc`** — `UV_CACHE_DIR` is exported from
+`ergodic-claude.sh`, which only a login shell sources, and the env var beats any
+`~/.config/uv/uv.toml`. A bare `ssh perlmutter 'uv cache dir'` reads the wrong thing and
+will tell you everything is fine when it isn't:
+
+```bash
+ssh perlmutter bash -lc 'uv cache dir'
+```
+
+If that is not under `$EC_SOFTWARE_ROOT/$USER/`, re-run the bootstrap — don't hand-edit
+`ergodic-claude.sh`, it is overwritten wholesale on every run:
+
+```bash
+./scripts/bootstrap-nersc.sh
+```
+
+Don't "fix" this with a `cache-dir` in `~/.config/uv/uv.toml` either. The exported
+`UV_CACHE_DIR` overrides it, so the file looks authoritative while doing nothing — one
+source of truth, and it is the bootstrap.
+
+Existing venvs stay bloated — hardlinking is decided at install time. Collapse the copies
+that are already on disk with `hardlink` (util-linux, present on Perlmutter). `-c` compares
+content only, which is required: the same wheel unpacked into different venvs has different
+mtimes. Dry-run first, and expect ~6–12 min for ~165k files:
+
+```bash
+SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)
+ssh perlmutter "hardlink -c -n ${SW}/\$USER"   # dry run — prints "Saved: N GiB"
+ssh perlmutter "hardlink -c ${SW}/\$USER"      # for real
+```
+
+Notes for Claude:
+- **Login node only.** Global common is read-only from compute, so both the config change
+  and the `hardlink` pass must run outside `salloc`/`srun`. This is the documented
+  exception to "substantial work belongs in an allocation" — no allocation can write here.
+- Run it over `$USER/` (venvs *and* cache together), not just `venvs/`, so cache and venv
+  copies collapse into each other too.
+- Safe by construction: `hardlink` links only sha256-identical files, and uv replaces files
+  on install rather than editing in place. Verify anyway — `ssh perlmutter '$VENV/bin/python
+  -c "import jax; print(jax.devices())"'` needs a GPU node, so use
+  `interactive-shared.sh 1 1` and `scancel` when done.
+- After deduping, per-venv `du` is meaningless: `du` credits each shared inode to whichever
+  venv it walks first, so one venv shows 6 GB and the rest show tens of MB. Only the total
+  for `$USER/` is real.
+- If the quota is still tight afterwards, check the other members' directories
+  (`du -h --max-depth=1 $EC_SOFTWARE_ROOT`) before asking NERSC for an increase — the same
+  fix usually applies to them.
+
+### Don't switch jax to `cuda12-local` to save space
+
+It looks like the obvious fix for the 4.5 GB above. It is not, on Perlmutter:
+
+| | |
+| --- | --- |
+| `cudatoolkit` modules | 11.7 → 13.2 — new enough |
+| `cudnn` modules | 8.3.2 → **9.5.0** — newest available |
+| what jax 0.10.2 wants | **cuDNN 9.24** |
+
+You would still pip-install cuDNN — the single largest wheel — gaining perhaps 2.5 GB once,
+in exchange for pinning every project to NERSC's module stack and re-breaking on every
+module upgrade. Dedupe the wheels instead; that recovers more, and keeps jax upgradable.
+
 ### Rebuild venv from scratch (only if it's corrupted or the user asks)
 
 Destructive — confirm with the user first. Runs on login node.

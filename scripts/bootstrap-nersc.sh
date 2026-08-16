@@ -100,8 +100,11 @@ END_MARKER="# <<< ergodic-claude managed <<<"
 echo "[remote] PROJECT_ROOT=${PROJECT_ROOT}"
 
 # 1. Directories (login node can write to global common)
+# The uv cache goes next to the venvs, on global common — see the note in the env
+# file below. Anything left in the old $PSCRATCH location is dead weight; scratch
+# purges it on its own, so we don't delete it here.
 mkdir -p "${PROJECT_ROOT}/venvs" "${PROJECT_ROOT}/uv-python" \
-         "${PSCRATCH}" "${PSCRATCH}/uv-cache"
+         "${PROJECT_ROOT}/.cache/uv" "${PSCRATCH}"
 echo "[remote] directories ready"
 
 # 2. uv (per-user install via curl; lands in ~/.local/bin/uv by default)
@@ -118,10 +121,18 @@ cat >"${ENV_FILE}" <<EOF
 # Managed by ergodic-claude/scripts/bootstrap-nersc.sh — re-run that to update.
 # Sourced from ~/.bash_profile.ext and ~/.zshrc.ext.
 
-# uv: binary on PATH, Pythons in global common (persistent), cache on PSCRATCH (fast, OK to be purged)
+# uv: binary on PATH, Pythons and cache in global common (persistent).
+#
+# The cache MUST sit on the same filesystem as the venvs in \$ECLAUDE_VENVS. uv
+# hardlinks package files out of the cache into a venv, so N venvs sharing a
+# dependency cost one copy — but only within one filesystem. Point the cache at
+# \$PSCRATCH (Lustre) or \$HOME (/global/u2) and uv silently falls back to a full
+# copy, with no warning. For jax GPU venvs that is 4.5 GB of site-packages/nvidia
+# duplicated per venv; measured 2026-08-16, one user's seven venvs cost 38 GB
+# instead of 7.8 GB, against a 100 GB quota shared by the whole project.
 export PATH="\${HOME}/.local/bin:\${PATH}"
 export UV_PYTHON_INSTALL_DIR="${PROJECT_ROOT}/uv-python"
-export UV_CACHE_DIR="\${PSCRATCH}/uv-cache"
+export UV_CACHE_DIR="${PROJECT_ROOT}/.cache/uv"
 
 # Where per-project venvs live (read-only from compute nodes — only mutate from login node)
 export ECLAUDE_VENVS="${PROJECT_ROOT}/venvs"
@@ -189,7 +200,7 @@ echo
 echo "[remote] sanity check:"
 echo "  venvs dir:        ${PROJECT_ROOT}/venvs       $([ -d "${PROJECT_ROOT}/venvs" ] && echo OK)"
 echo "  scratch workdir:  ${PSCRATCH}         $([ -d "${PSCRATCH}" ] && echo OK)"
-echo "  uv cache:         ${PSCRATCH}/uv-cache  $([ -d "${PSCRATCH}/uv-cache" ] && echo OK)"
+echo "  uv cache:         ${PROJECT_ROOT}/.cache/uv  $([ -d "${PROJECT_ROOT}/.cache/uv" ] && echo OK)"
 echo "  env file:         ${ENV_FILE}                $([ -f "${ENV_FILE}" ] && echo OK)"
 REMOTE
 
