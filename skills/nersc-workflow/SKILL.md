@@ -375,7 +375,7 @@ ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc
 > REPO=$(basename "$PWD")            # from a worktree, set this to the real repo name — see Conventions
 > ACCOUNT_GPU=$(~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU)
 > alloc=$(ssh perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive \
->   --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --no-shell" 2>&1)
+>   --time=04:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --no-shell" 2>&1)
 > JOBID=$(printf '%s\n' "$alloc" | grep -oE 'Granted job allocation [0-9]+' | grep -oE '[0-9]+$')
 > ssh perlmutter "cd \$PSCRATCH/${REPO} && \
 >   SLURM_JOB_ID=${JOBID} nohup python -u scan.py --nodes 4 > \$PSCRATCH/${REPO}/workdir/scan.log 2>&1 &"
