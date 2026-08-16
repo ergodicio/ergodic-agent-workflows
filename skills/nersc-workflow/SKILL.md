@@ -253,6 +253,16 @@ ssh perlmutter "hardlink -c -n ${SW}/\$USER"   # dry run — prints "Saved: N Gi
 ssh perlmutter "hardlink -c ${SW}/\$USER"      # for real
 ```
 
+**The cache now counts against the quota, and nothing purges it.** That is the one property
+given up in the move off scratch: `$PSCRATCH` purged the cache for free, global common never
+will, and uv keeps every version of every wheel it has ever downloaded. Prune it when the
+project space gets tight — this only drops entries no venv is using, and venv files survive
+regardless because they are hardlinks to those inodes, not copies of them:
+
+```bash
+ssh perlmutter bash -lc 'uv cache prune'
+```
+
 Notes for Claude:
 - **Login node only.** Global common is read-only from compute, so both the config change
   and the `hardlink` pass must run outside `salloc`/`srun`. This is the documented
@@ -260,9 +270,20 @@ Notes for Claude:
 - Run it over `$USER/` (venvs *and* cache together), not just `venvs/`, so cache and venv
   copies collapse into each other too.
 - Safe by construction: `hardlink` links only sha256-identical files, and uv replaces files
-  on install rather than editing in place. Verify anyway — `ssh perlmutter '$VENV/bin/python
-  -c "import jax; print(jax.devices())"'` needs a GPU node, so use
-  `interactive-shared.sh 1 1` and `scancel` when done.
+  on install rather than editing in place. Verify anyway — a real op, not just an import.
+  That needs a GPU node, so use `interactive-shared.sh 1 1` (1 GPU, 1 h) and `scancel` when
+  done:
+  ```bash
+  ssh perlmutter "srun --jobid=<JOBID> --overlap bash -lc '\
+    source \$ECLAUDE_VENVS/<repo>/bin/activate && \
+    python -c \"import jax, jax.numpy as jnp; x=jnp.ones((256,256)); \
+    print((x@x).sum(), jax.devices())\"'"
+  ```
+- **The cache is now read-only from compute, like the venvs.** It moved onto the same
+  filesystem, so it inherits the same rule — on a compute node, activate the venv and run
+  `python` directly rather than `uv run`, which may want to write the cache while resolving.
+  The launch recipes below already do this; the interactive attach example is the one place
+  `uv run` appears, and it is fine there only because the venv is already in sync.
 - After deduping, per-venv `du` is meaningless: `du` credits each shared inode to whichever
   venv it walks first, so one venv shows 6 GB and the rest show tens of MB. Only the total
   for `$USER/` is real.
@@ -391,12 +412,14 @@ ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"
 cd $PSCRATCH/<repo>
 source ~/.bash_profile.ext                        # ergodic-claude.sh: MLflow env + creds, $ECLAUDE_VENVS
 source $ECLAUDE_VENVS/<repo>/bin/activate         # no hardcoded project dir — it comes from the env file
-uv run run.py --cfg <config-path-no-yaml>         # or whatever the project's launch is
+python run.py --cfg <config-path-no-yaml>         # or whatever the project's launch is
 ```
 
 The allocation persists until its walltime expires or you `scancel` it — you can exit the tty and re-attach with the same `ssh -tt … srun --jobid=<JOBID> --pty bash` to run another command.
 
 **Same compute-node rules apply:** no `uv sync` / `uv pip install` / `uv venv` inside the attached shell — global common is read-only here. Exit, mutate on the login node, re-attach.
+
+**Note the plain `python`, not `uv run`.** Once the venv is activated `uv run` adds nothing but a resolve step, and that step wants to write both the venv and the uv cache — which now live on the same read-only-from-compute filesystem (see the uv-cache section above). If you have a reason to want `uv run` here, it must be `uv run --no-sync`.
 
 ### Run on compute node (one-shot, automated launches)
 
@@ -557,7 +580,7 @@ plus explicit node count in the launcher overrides (`SrunLauncher(overrides=f"--
 Notes:
 - `python -u` for unbuffered output (so `tail -f` of the log is responsive).
 - `ergodic-claude.sh` provides `MLFLOW_TRACKING_URI` and (via `~/.mlflow_credentials`) `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`. If those are empty, the user hasn't filled in their credentials yet — point them at `vim ~/.mlflow_credentials` on Perlmutter.
-- For adept (the usual case), the entry point should be `uv run run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking.
+- For adept (the usual case), the entry point should be `run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking. On a compute node run it as `python run.py …` after activating the venv, not `uv run` — that is what the recipes above do, and why.
 - The `--time=01:00:00` in the one-shot launches above is a polite default, **not** the cap: `gpu_interactive` allows 4 h (and 4 nodes, 2 submitted jobs — measured 2026-08-11, re-check with `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`). Past 4 h, switch to `--qos=regular`.
 
 ### Monitor
