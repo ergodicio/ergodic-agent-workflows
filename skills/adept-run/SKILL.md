@@ -447,44 +447,63 @@ does not dominate, and aggregate HBM (640 GB across 4 nodes) is the real prize.
 
 - **On a laptop**: 1–4 depending on cores and solver size.
 - **On a NERSC GPU node**: one worker per GPU (`available_accelerators=4`) is the default — see the canonical multi-node config above. More than one run per GPU only if each is small enough to share VRAM.
-- **CPU node**: ~32–64 per node — but JAX-on-CPU **is** multi-threaded, so see below.
+- **CPU node**: one worker per **physical** core (128) — but JAX-on-CPU **is** multi-threaded, so see below.
 
 ### CPU-node scan — pin the threads or everything crawls
 
-A Perlmutter CPU node is 128 physical cores, and JAX-on-CPU grabs **all visible cores per
-process** by default. 64 unconstrained workers is therefore a 64× oversubscription: the node
-thrashes on context switches and every run is slower than it would be serially. For the small
-1-D solves a scan is usually made of, XLA's intra-op threading buys nothing anyway, so pin
-each worker to one thread and let parallelism come from the worker count.
+A Perlmutter CPU node is 128 physical cores / 256 logical (2× AMD EPYC 7763, SMT-2, 8 NUMA
+domains), and JAX-on-CPU grabs **all visible cores per process** by default. 64 unconstrained
+workers is therefore a 64× oversubscription: the node thrashes on context switches and every
+run is slower than it would be serially. So pin each worker and let parallelism come from the
+worker count.
+
+**The mask is the only knob.** XLA:CPU sizes its thread pools from the process's *schedulable*
+CPU count (`sched_getaffinity`) and there is no API or flag to set it directly — jaxlib 0.9
+exposes no `intra_op_parallelism_threads` XLA flag, and `make_cpu_client` takes no thread-pool
+argument. Measured thread count vs. mask width in one process: 1 core → 16 threads, 4 → 37,
+16 → 121, 64 → 425, 128 → 603. So `taskset` / `sched_setaffinity` / parsl's `cpu_affinity`
+*is* how you say "this process gets N cores". (`--xla_force_host_platform_device_count=N` is
+**not** it — its own help text says all those host devices share one thread pool.)
 
 ```python
 single_thread = (
     "export JAX_PLATFORMS=cpu; "
     "export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; export OPENBLAS_NUM_THREADS=1; "
-    'export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"; '
+    'export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"; '
     "source $ECLAUDE_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
 )
 
 Config(executors=[HighThroughputExecutor(
     label="cpu-scan",
-    max_workers_per_node=64,
+    max_workers_per_node=128,                   # one per PHYSICAL core
     cpu_affinity="block",                       # keep each worker on its own cores
     provider=LocalProvider(init_blocks=1, max_blocks=1, worker_init=single_thread),
 )])
 ```
 
-Launch it with the driver **on the node** (see the ⚠️ box above) — `LocalProvider` with the
-default launcher is then correct and no `SrunLauncher` is needed. **This is a one-node
-recipe**: the default launcher only ever fills the driver's own node, so allocating more than
-one node here leaves the rest idle. For a genuine multi-node scan use the `SrunLauncher`
-config above instead.
+> ### ⚠️ Start the driver under `taskset -c 0-127`, or half your workers collide
+>
+> `cpu_affinity="block"` splits **the mask parsl inherits**. On a full node that mask is all
+> 256 *logical* CPUs, and this node numbers hyperthread siblings as `c` and `c+128` — so the
+> first half of the blocks lands on physical cores and the second half lands on those same
+> cores' siblings. Workers `j` and `j+K/2` collide, each believing it owns its cores.
+> Measured with `max_workers_per_node=4`: spans `0-63`, `64-127`, `128-191`, `192-255` —
+> workers 0 and 2 are the same silicon. Restricting the driver first gives `0-31`, `32-63`,
+> `64-95`, `96-127`: disjoint physical cores, siblings left idle. This is not a tuning
+> preference — see the hyperthread row in the table below.
+
+Launch it with the driver **on the node** (see the *"`LocalProvider` puts workers where the
+DRIVER runs"* box in the parameter-scan section) — `LocalProvider` with the default launcher
+is then correct and no `SrunLauncher` is needed. **This is a one-node recipe**: the default
+launcher only ever fills the driver's own node, so allocating more than one node here leaves
+the rest idle. For a genuine multi-node scan use the `SrunLauncher` config above instead.
 
 ```bash
 # 2 h, 1 node; prints a squeue line — take the JOBID from it. You are left on a login node.
 ~/.claude/scripts/ergodic/interactive-cpu.sh 2 1
 ssh perlmutter "cd \$PSCRATCH/<repo> && mkdir -p workdir && nohup setsid srun --overlap \
-    --jobid=<JOBID> -N1 -n1 -c 128 --cpu-bind=none bash -lc '<activate…> \
-    python -u scripts/<scan>.py --n_workers 64' \
+    --jobid=<JOBID> -N1 -n1 -c 256 --cpu-bind=none bash -lc '<activate…> \
+    taskset -c 0-127 python -u scripts/<scan>.py --n_workers 128' \
     > \$PSCRATCH/<repo>/workdir/scan-<JOBID>.log 2>&1 < /dev/null &"
 ```
 
@@ -493,10 +512,86 @@ a locally-detached `ssh` takes the step down with your session, and anything wri
 `workdir/` is deleted by the next `sync-up --delete`.
 
 `--cpu-bind=none` matters: without it the driver's step binds to a subset of CPUs and its
-worker children inherit that binding, so 64 workers land on a handful of cores.
+worker children inherit that binding, so the workers land on a handful of cores. It is what
+makes the whole node visible; the `taskset -c 0-127` then narrows that to physical cores.
 
 Measured 2026-08-16 (lagradept 1-D rad-hydro, nr=256, radiation on): **189 s per run**
-single-threaded, so a 512-point grid at 64 workers is ~25 min on one node.
+single-threaded, so a 512-point grid at 128 workers is ~13 min on one node.
+
+`max_workers_per_node` was 64 here until 2026-08-16. That left half the node idle: 64
+single-threaded workers on 128 physical cores. Raising it to 128 is close to a straight 2×
+on scan throughput and costs nothing.
+
+### How many cores per worker — measured
+
+Two questions, two different answers. Benchmark: same solver, truncated to 2 ns of problem
+time (17.2 s single-threaded), one node of Perlmutter CPU, jax 0.9 / jaxlib 0.9.
+
+**1. How fast can one run go?** One process alone on the node, steady-state solve time
+(compile excluded), `taskset` to N physical cores:
+
+| cores | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| nr=256 | 17.2 s | 11.2 s | 8.7 s | **7.4 s** | 8.0 s | 8.3 s | 8.6 s | 9.8 s |
+| speedup | 1.00× | 1.53× | 1.99× | **2.33×** | 2.14× | 2.07× | 2.00× | 1.76× |
+| nr=1024 | 18.1 s | — | 7.8 s | **6.1 s** | 6.4 s | 6.3 s | 6.6 s | — |
+| speedup | 1.00× | — | 2.33× | **2.97×** | 2.85× | 2.89× | 2.77× | — |
+
+**The knee is 8 cores and it does not move.** 4× the cells raises the plateau (2.3× → 3.0×)
+but not its location, and past 8 cores more cores make the run *slower*. (nr=1024 was run for
+¼ the problem time so total work matches — the comparison isolates array size from step count.)
+There is no point ever handing a 1-D solve more than 8 cores.
+
+**2. How many runs per node-hour?** Whole node, K workers × C physical cores, K·C = 128, each
+task a fresh process (import + setup + compile + one solve) — what a scan actually pays:
+
+| cores/worker C | 1 | 2 | 4 | 8 | 16 |
+| --- | --- | --- | --- | --- | --- |
+| workers K | 128 | 64 | 32 | 16 | 8 |
+| makespan | 69.6 s | 37.1 s | 26.1 s | 21.8 s | 20.8 s |
+| node-s per run | **0.54** | 0.58 | 0.82 | 1.36 | 2.59 |
+| vs. C=1 | **1.00×** | 1.07× | 1.50× | 2.50× | 4.77× |
+
+**Throughput wants thin workers.** One core per worker is optimal; two is a wash (+7%); eight
+costs you 2.5× the node time for the same set of runs. So the single-threaded recipe above
+stays the default for scans — that is now measured, not asserted.
+
+**Hyperthreads never help.** Same K, but each worker also given its siblings (256 logical
+instead of 128 physical): K=128 69.6 → 70.7 s, K=64 37.1 → 39.7 s, K=32 26.1 → 30.8 s. The
+more siblings you hand out, the worse it gets. Leave CPUs 128–255 idle.
+
+### Fat workers — when you have fewer runs than cores
+
+The thin-worker default is a *throughput* optimum. It is the wrong choice when you have fewer
+runs than cores and care about finishing them, not about node-hours: 6 configs on a 128-core
+node leaves 122 cores idle at C=1. Give each run 8 cores (the knee) and it finishes 2.3–3.0×
+sooner for free.
+
+Drop the single-threading exports — parsl sets `OMP_NUM_THREADS` to the worker's core count
+itself, and XLA picks up the mask on its own:
+
+```python
+fat_workers = (
+    "export JAX_PLATFORMS=cpu; "                # no OMP_NUM_THREADS, no multi_thread_eigen=false
+    "source $ECLAUDE_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
+)
+
+Config(executors=[HighThroughputExecutor(
+    label="cpu-fat",
+    max_workers_per_node=16,                    # 16 x 8 physical cores = 128
+    cpu_affinity="block",
+    provider=LocalProvider(init_blocks=1, max_blocks=1, worker_init=fat_workers),
+)])
+```
+
+Same `taskset -c 0-127` on the driver, same reason. Pick `max_workers_per_node` as
+`128 // cores_per_worker` with `cores_per_worker <= 8`; anything above 8 buys nothing.
+
+**Re-measure the knee for a solver that isn't 1-D.** Everything above is a 1-D radiation-hydro
+grid, where the per-step arrays are far too small to feed 128 cores. A 2-D or large-`nv`
+kinetic solve has more work per step and the knee will sit further out. The measurement is
+cheap — one process, `taskset -c 0-$((n-1))`, double the cores until the solve time stops
+falling.
 
 Scaling past one node does **not** require `SlurmProvider` — use the multi-node
 `LocalProvider` config above inside an N-node allocation. Reach for `SlurmProvider` only when
