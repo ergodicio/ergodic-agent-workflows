@@ -10,23 +10,23 @@ Manage the full cycle of syncing, running, monitoring, and iterating on Perlmutt
 
 ## Helper scripts (prefer these)
 
-These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-local.sh`). They each wrap one known-safe `ssh perlmutter` invocation, so the user can allowlist them in one rule (`Bash(~/.claude/scripts/ergodic/*)`) and skip per-command approval. **Always prefer the script over an inline `ssh perlmutter "…"` for these ops** — it's the same command but pre-approved.
+These wrappers live at `~/.ergodic-claude/ops/` (symlinked by `bootstrap-local.sh`). They each wrap one known-safe `ssh perlmutter` invocation. **Always prefer the script over an inline `ssh perlmutter "…"` for these ops** — it makes the reviewed operation explicit and gives each agent a clear approval boundary.
 
 | Need | Script |
 | --- | --- |
-| Sync cwd → `$PSCRATCH/<repo>/` | `~/.claude/scripts/ergodic/sync-up.sh` |
-| Allocate interactive GPU (1 GPU) | `~/.claude/scripts/ergodic/interactive-gpu.sh [hours] [nodes]` |
-| Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.claude/scripts/ergodic/interactive-gpu-node.sh [hours] [nodes]` |
-| Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.claude/scripts/ergodic/interactive-shared.sh [gpus] [hours]` |
-| Allocate interactive CPU node (1-4 nodes) | `~/.claude/scripts/ergodic/interactive-cpu.sh [hours] [nodes]` |
-| Submit a batch job | `~/.claude/scripts/ergodic/submit-batch.sh <sbatch-path>` |
-| Commit-pinned isolated run (checkout SHA → own dir → sbatch) | `~/.claude/scripts/ergodic/launch-pinned.sh [opts] <cfg…>` |
-| List your jobs | `~/.claude/scripts/ergodic/squeue.sh` |
-| Job accounting | `~/.claude/scripts/ergodic/sacct.sh <jobid> [jobid2 ...]` |
-| Cancel one job (by id) | `~/.claude/scripts/ergodic/scancel.sh <jobid>` |
-| Cat a remote log | `~/.claude/scripts/ergodic/read-log.sh <relpath>` |
-| Grep a remote log | `~/.claude/scripts/ergodic/grep-log.sh <pattern> <relpath>` |
-| Remote git SHA | `~/.claude/scripts/ergodic/remote-sha.sh [subdir]` |
+| Sync cwd → `$PSCRATCH/<repo>/` | `~/.ergodic-claude/ops/sync-up.sh` |
+| Allocate interactive GPU (1 GPU) | `~/.ergodic-claude/ops/interactive-gpu.sh [hours] [nodes]` |
+| Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.ergodic-claude/ops/interactive-gpu-node.sh [hours] [nodes]` |
+| Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.ergodic-claude/ops/interactive-shared.sh [gpus] [hours]` |
+| Allocate interactive CPU node (1-4 nodes) | `~/.ergodic-claude/ops/interactive-cpu.sh [hours] [nodes]` |
+| Submit a batch job | `~/.ergodic-claude/ops/submit-batch.sh <sbatch-path>` |
+| Commit-pinned isolated run (checkout SHA → own dir → sbatch) | `~/.ergodic-claude/ops/launch-pinned.sh [opts] <cfg…>` |
+| List your jobs | `~/.ergodic-claude/ops/squeue.sh` |
+| Job accounting | `~/.ergodic-claude/ops/sacct.sh <jobid> [jobid2 ...]` |
+| Cancel one job (by id) | `~/.ergodic-claude/ops/scancel.sh <jobid>` |
+| Cat a remote log | `~/.ergodic-claude/ops/read-log.sh <relpath>` |
+| Grep a remote log | `~/.ergodic-claude/ops/grep-log.sh <pattern> <relpath>` |
+| Remote git SHA | `~/.ergodic-claude/ops/remote-sha.sh [subdir]` |
 
 Operations not covered by the scripts (venv mutation, custom launch, pulling artifacts back, multi-node launch) still go through inline `ssh perlmutter "…"` as shown below — those need the user to see the full command before approving.
 
@@ -80,9 +80,9 @@ account decides which allocation gets billed. Resolve them at the start of any c
 needs them:
 
 ```bash
-ACCOUNT=$(~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT)          # e.g. m4490 — CPU jobs
-ACCOUNT_GPU=$(~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU)  # e.g. m4490_g — GPU jobs
-SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)         # /global/common/software/<project>
+ACCOUNT=$(~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT)          # e.g. m4490 — CPU jobs
+ACCOUNT_GPU=$(~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU)  # e.g. m4490_g — GPU jobs
+SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)         # /global/common/software/<project>
 ```
 
 - `show-config.sh` with no argument prints everything that resolved (and where from) — run it
@@ -90,7 +90,7 @@ SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)         # /globa
 - The `interactive-*.sh`, `submit-batch.sh`, and `launch-pinned.sh` helpers already do this
   themselves and **refuse to run with no account configured** rather than guessing. You only
   need the lines above for free-form `ssh perlmutter "salloc … / srun …"` commands.
-- If `EC_ACCOUNT` is empty: `~/.claude/scripts/ergodic/list-accounts.sh` prints the projects
+- If `EC_ACCOUNT` is empty: `~/.ergodic-claude/ops/list-accounts.sh` prints the projects
   the user can actually charge (from SLURM's own associations), then the user picks one — via
   `./scripts/bootstrap-nersc.sh` or by writing `: "${EC_ACCOUNT:=<proj>}"` into
   `~/.config/ergodic-claude/config.sh`. **Ask; never pick a project for them.**
@@ -114,8 +114,9 @@ When a command wraps the body in `salloc … srun …` (the one-shot launches) o
 NERSC's [coding-agent guidance](https://docs.nersc.gov/development/coding-agents/) governs
 anything an agent does on their systems, including through `ssh perlmutter "…"` from a
 laptop. The full text ships in this repo at `rules/nersc-agent-rules.md` and is installed
-into `~/.claude/CLAUDE.md` (both laptop and Perlmutter) by the bootstrap scripts, so it
-binds whether or not this skill is loaded. The parts that bite hardest here:
+into both `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (on laptop and Perlmutter) by the
+bootstrap scripts, so it binds whether or not this skill is loaded. The parts that bite
+hardest here:
 
 **Never recursively traverse a shared filesystem** — `/`, `/global`, `/global/cfs`,
 `/global/homes`, `/pscratch`, `/opt`, `/usr`. Not with `find`, `fd`, `tree`, recursive `du`,

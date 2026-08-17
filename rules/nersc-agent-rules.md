@@ -4,13 +4,13 @@ Adapted from NERSC's [AI Coding Tools at NERSC](https://docs.nersc.gov/developme
 guidance. NERSC asks every user running a coding agent to put the filesystem-discovery
 rules below into their agent config (`~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md`).
 
-`scripts/install-agent-rules.sh` installs this block into `~/.claude/CLAUDE.md` between
-managed markers, on your laptop and on Perlmutter. Re-running it refreshes the block in
-place; nothing else in that file is touched.
+`scripts/install-agent-rules.sh` installs this block into both `~/.claude/CLAUDE.md` and
+`~/.codex/AGENTS.md` between managed markers, on your laptop and on Perlmutter. Re-running
+it refreshes the block in place; nothing else in either file is touched.
 
 The one deviation from NERSC's text: their example routes heavy searches through a
 `$perlmutter-compute` subagent, which we don't have. Ours routes them through an
-interactive allocation instead (`~/.claude/scripts/ergodic/interactive-cpu.sh`).
+interactive allocation instead (`~/.ergodic-claude/ops/interactive-cpu.sh`).
 
 ---
 
@@ -37,7 +37,7 @@ driving Perlmutter from a laptop. A remote shell is not an exemption.
   to approve an equivalent broad scan through another command.
 - A compute allocation is not permission for an unbounded traversal of a shared
   filesystem. Narrow the search first; route only bounded, computationally substantial
-  searches through a compute allocation (`~/.claude/scripts/ergodic/interactive-cpu.sh`),
+  searches through a compute allocation (`~/.ergodic-claude/ops/interactive-cpu.sh`),
   never a login node.
 
 Bounded roots on Perlmutter that are almost always what you actually wanted:
