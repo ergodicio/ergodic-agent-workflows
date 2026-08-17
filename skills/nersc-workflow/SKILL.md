@@ -107,7 +107,7 @@ SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)         # /globa
 | Reading the venv to run code (`python`, `uv run`) | Either, but typically compute node inside `srun` |
 
 When this skill calls plain `ssh perlmutter "…"`, you land on a login node — that's where venv mutations belong.
-When this skill calls `ssh -tt perlmutter "salloc … srun …"`, the `srun` body runs on a compute node — **only read the venv there, never mutate it**. Specifically: never run `uv sync` / `uv pip install` / `uv venv` inside a salloc'd shell. If you need to update deps, exit the allocation, run uv on the login node, then relaunch.
+When a command wraps the body in `salloc … srun …` (the one-shot launches) or attaches with `srun --jobid=…`, that body runs on a compute node — **only read the venv there, never mutate it**. Specifically: never run `uv sync` / `uv pip install` / `uv venv` inside a salloc'd shell. If you need to update deps, exit the allocation, run uv on the login node, then relaunch.
 
 ## Hard constraints from NERSC (not negotiable)
 
@@ -196,6 +196,115 @@ Notes for Claude:
 - Don't fall back to `pip` or `conda`. If uv fails, surface the error.
 - **Never run this inside `salloc` / `srun`.** Global common is read-only on compute nodes.
 
+### The uv cache must live on global common, next to the venvs
+
+**Check this before diagnosing any "we're out of space on global common" report.** It is
+the usual cause, and it is invisible until you look.
+
+uv hardlinks package files from its cache into a venv, so ten venvs sharing a dependency
+cost one copy on disk. It can only do that **within a single filesystem**. The venvs are on
+`/global/common` (tlcommon); `$PSCRATCH` is Lustre and `$HOME` is `/global/u2` (tlhome2).
+Point the cache at either of those and uv silently falls back to a full copy. No warning
+reaches the user; the venvs just quietly cost 6× what they should.
+
+`bootstrap-nersc.sh` used to do exactly that — it set `UV_CACHE_DIR="${PSCRATCH}/uv-cache"`,
+reasoning that scratch is fast and purgeable. It is, but it is also the wrong filesystem,
+and that one line is what inflated every jax venv in the project. Fixed 2026-08-16; anyone
+whose `ergodic-claude.sh` predates that needs to re-run the bootstrap.
+
+For jax GPU venvs this is brutal, because the CUDA wheels dominate: `site-packages/nvidia`
+is **4.5 GB** of the ~6 GB (cudnn 1.3G, cublas 817M, cusolver 473M, cusparse 465M,
+nccl 454M, nvshmem 335M, cufft 281M). Every venv carries its own identical copy. Measured
+2026-08-16: seven venvs, one user, **38 GB**; after the fix below, **7.8 GB**.
+
+This matters because `/global/common/software/<project>` is a **per-project quota shared by
+every member** — m4490 is capped at 100 GB across all users. One person's duplicated CUDA
+wheels exhaust the quota for the whole team. `showquota` does **not** report this
+filesystem; the only signal is `Disk quota exceeded` on write.
+
+Check where the cache is pointing. **Use `bash -lc`** — `UV_CACHE_DIR` is exported from
+`ergodic-claude.sh`, which only a login shell sources, and the env var beats any
+`~/.config/uv/uv.toml`. A bare `ssh perlmutter 'uv cache dir'` reads the wrong thing and
+will tell you everything is fine when it isn't:
+
+```bash
+ssh perlmutter bash -lc 'uv cache dir'
+```
+
+If that is not under `$EC_SOFTWARE_ROOT/$USER/`, re-run the bootstrap — don't hand-edit
+`ergodic-claude.sh`, it is overwritten wholesale on every run:
+
+```bash
+./scripts/bootstrap-nersc.sh
+```
+
+Don't "fix" this with a `cache-dir` in `~/.config/uv/uv.toml` either. The exported
+`UV_CACHE_DIR` overrides it, so the file looks authoritative while doing nothing — one
+source of truth, and it is the bootstrap.
+
+Existing venvs stay bloated — hardlinking is decided at install time. Collapse the copies
+that are already on disk with `hardlink` (util-linux, present on Perlmutter). `-c` compares
+content only, which is required: the same wheel unpacked into different venvs has different
+mtimes. Dry-run first, and expect ~6–12 min for ~165k files:
+
+```bash
+SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)
+ssh perlmutter "hardlink -c -n ${SW}/\$USER"   # dry run — prints "Saved: N GiB"
+ssh perlmutter "hardlink -c ${SW}/\$USER"      # for real
+```
+
+**The cache now counts against the quota, and nothing purges it.** That is the one property
+given up in the move off scratch: `$PSCRATCH` purged the cache for free, global common never
+will, and uv keeps every version of every wheel it has ever downloaded. Prune it when the
+project space gets tight — this only drops entries no venv is using, and venv files survive
+regardless because they are hardlinks to those inodes, not copies of them:
+
+```bash
+ssh perlmutter bash -lc 'uv cache prune'
+```
+
+Notes for Claude:
+- **Login node only.** Global common is read-only from compute, so both the config change
+  and the `hardlink` pass must run outside `salloc`/`srun`. This is the documented
+  exception to "substantial work belongs in an allocation" — no allocation can write here.
+- Run it over `$USER/` (venvs *and* cache together), not just `venvs/`, so cache and venv
+  copies collapse into each other too.
+- Safe by construction: `hardlink` links only sha256-identical files, and uv replaces files
+  on install rather than editing in place. Verify anyway — a real op, not just an import.
+  That needs a GPU node, so use `interactive-shared.sh 1 1` (1 GPU, 1 h) and `scancel` when
+  done:
+  ```bash
+  ssh perlmutter "srun --jobid=<JOBID> --overlap bash -lc '\
+    source \$ECLAUDE_VENVS/<repo>/bin/activate && \
+    python -c \"import jax, jax.numpy as jnp; x=jnp.ones((256,256)); \
+    print((x@x).sum(), jax.devices())\"'"
+  ```
+- **The cache is now read-only from compute, like the venvs.** It moved onto the same
+  filesystem, so it inherits the same rule — on a compute node, activate the venv and run
+  `python` directly rather than `uv run`, which may want to write the cache while resolving.
+  The launch recipes below already do this; the interactive attach example is the one place
+  `uv run` appears, and it is fine there only because the venv is already in sync.
+- After deduping, per-venv `du` is meaningless: `du` credits each shared inode to whichever
+  venv it walks first, so one venv shows 6 GB and the rest show tens of MB. Only the total
+  for `$USER/` is real.
+- If the quota is still tight afterwards, check the other members' directories
+  (`du -h --max-depth=1 $EC_SOFTWARE_ROOT`) before asking NERSC for an increase — the same
+  fix usually applies to them.
+
+### Don't switch jax to `cuda12-local` to save space
+
+It looks like the obvious fix for the 4.5 GB above. It is not, on Perlmutter:
+
+| | |
+| --- | --- |
+| `cudatoolkit` modules | 11.7 → 13.2 — new enough |
+| `cudnn` modules | 8.3.2 → **9.5.0** — newest available |
+| what jax 0.10.2 wants | **cuDNN 9.24** |
+
+You would still pip-install cuDNN — the single largest wheel — gaining perhaps 2.5 GB once,
+in exchange for pinning every project to NERSC's module stack and re-breaking on every
+module upgrade. Dedupe the wheels instead; that recovers more, and keeps jax upgradable.
+
 ### Rebuild venv from scratch (only if it's corrupted or the user asks)
 
 Destructive — confirm with the user first. Runs on login node.
@@ -223,7 +332,7 @@ Three patterns; pick deliberately.
 | Pattern | When to use | How |
 | --- | --- | --- |
 | **Persistent allocation + attach** (preferred for iterative dev) | Running a sim, looking at output, tweaking config, running again. Multiple commands in the same allocation. Live debugging. | `interactive-gpu.sh` → `ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"` → work on the compute node directly |
-| **One-shot fire-and-forget** | Automated launches Claude is going to monitor by tailing a log. Allocation lifetime = command lifetime. | `ssh -tt perlmutter "salloc … srun bash -c '…'"` — see "Run on compute node" below |
+| **One-shot fire-and-forget** | Automated launches Claude is going to monitor by tailing a log. Allocation lifetime = command lifetime. | `ssh perlmutter "nohup setsid salloc … srun bash -c '…' > \$PSCRATCH/<repo>/workdir/….log &"` — see "Run on compute node" below |
 | **Commit-pinned isolated run** (preferred for production / long-queue batch) | A run that must be reproducible and immune to later branch switches — production sweeps, multi-hour/day batch jobs, anything you'll queue then walk away from. | `launch-pinned.sh` — see below |
 
 For **parameter scans / sweeps**, neither shell pattern is the right tool — use the parsl + LocalProvider pattern documented in the `adept-run` skill. parsl launches workers inside whichever allocation you've already got (laptop or NERSC), so the same script works in both. Do **not** loop a shell over configs.
@@ -303,16 +412,18 @@ ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"
 cd $PSCRATCH/<repo>
 source ~/.bash_profile.ext                        # ergodic-claude.sh: MLflow env + creds, $ECLAUDE_VENVS
 source $ECLAUDE_VENVS/<repo>/bin/activate         # no hardcoded project dir — it comes from the env file
-uv run run.py --cfg <config-path-no-yaml>         # or whatever the project's launch is
+python run.py --cfg <config-path-no-yaml>         # or whatever the project's launch is
 ```
 
 The allocation persists until its walltime expires or you `scancel` it — you can exit the tty and re-attach with the same `ssh -tt … srun --jobid=<JOBID> --pty bash` to run another command.
 
 **Same compute-node rules apply:** no `uv sync` / `uv pip install` / `uv venv` inside the attached shell — global common is read-only here. Exit, mutate on the login node, re-attach.
 
+**Note the plain `python`, not `uv run`.** Once the venv is activated `uv run` adds nothing but a resolve step, and that step wants to write both the venv and the uv cache — which now live on the same read-only-from-compute filesystem (see the uv-cache section above). If you have a reason to want `uv run` here, it must be `uv run --no-sync`.
+
 ### Run on compute node (one-shot, automated launches)
 
-Allocate an interactive node and run training. Output is captured to a local log and backgrounded so the user can monitor it.
+Allocate an interactive node and run training. Output is captured to a log on `$PSCRATCH/<repo>/workdir/` and the launch is detached on the login node so the user can monitor it (and so it survives the local session — see "Why the driver goes on a compute node" below).
 
 The launch sources `${SW}/$USER/ergodic-claude.sh` (installed by `bootstrap-nersc.sh`) to get MLflow env vars + credentials, then activates the project venv, then runs python. **No `uv` mutations happen here** — the venv was prepared on the login node by the previous step.
 
@@ -323,7 +434,7 @@ The launch sources `${SW}/$USER/ergodic-claude.sh` (installed by `bootstrap-ners
 REPO=$(basename "$PWD")
 SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)
 ACCOUNT_GPU=$(~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU)
-ssh -tt perlmutter "salloc --nodes=1 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc --nodes=1 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-train.log 2>&1 < /dev/null &"
 ```
 
 **Multi-node (only if the workload genuinely needs >1 node):**
@@ -331,14 +442,16 @@ ssh -tt perlmutter "salloc --nodes=1 --gpus-per-node=4 --qos=interactive --time=
 REPO=$(basename "$PWD")
 SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)
 ACCOUNT_GPU=$(~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU)
-ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun --overlap --nodes=1 --ntasks=1 bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'" > /tmp/nersc_${REPO}.log 2>&1 &
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun --overlap --nodes=1 --ntasks=1 bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-train.log 2>&1 < /dev/null &"
 ```
 
 **IMPORTANT: multi-node wraps the driver in exactly `srun --overlap --nodes=1 --ntasks=1` — not a plain `srun`.** A plain outer `srun` (no flags) runs the command as an N-node job step and conflicts with the internal `srun --overlap` that torchrun-style frameworks use to place workers (interconnect errors). The `--overlap --nodes=1 --ntasks=1` form instead runs the *driver* as a 1-task step on the head compute node, and the framework's internal worker srun still lays out across all nodes with full GPU pinning. Verified 2026-07-03 (Perlmutter, parsl HTEX + SrunLauncher): driver step `.0` on the head node, worker step `.1` spanning all nodes, workers GPU-pinned on every node, and a 1.5 h 8-run production scan completed with results byte-identical to its login-driver baseline.
 
-**Why that 2026-07-03 result and the 2026-08-11 failure below are both real** — worth knowing, because the two look contradictory: the July run's worker step was **`.1` spanning all nodes**, i.e. *one* srun for the whole allocation (`nodes_per_block=N, max_blocks=1`), which coexists with a driver step. The canonical config is one srun **per node** (`nodes_per_block=1, max_blocks=nodes`), and those are what fail to bind CPUs when a driver step already exists. So the discriminator is the provider shape, not the framework: with the canonical one-block-per-node config the wrapper is fatal. (Inference from the step layout each note recorded, not a third measurement.) Since the sharded layout also moved to one-block-per-node, **every parsl config in these skills now wants the driver off-step** — see the EXCEPTION below.
+**Parsl's internal srun carries no `--overlap` of its own** (verified 2026-07-21 against archived runinfo submit scripts, parsl 2026.6.1: `srun --ntasks N -l <overrides>`) — don't add it to `SrunLauncher(overrides=…)`; it's unnecessary. Worker placement comes from the driver's inherited SLURM env, so make it explicit instead: `SrunLauncher(overrides=f"--nodes {nodes} --ntasks-per-node 1 --gpus-per-node 4")`. This one-shot (salloc-child) driver inherits the full job env and spreads correctly; launching the driver by **attaching to a parked allocation** (`srun --jobid … -N1 -n1`) scrambles the env and packs ALL workers onto one node unless the env is scrubbed — see the parked-allocation warning for multi-node parsl runs farther below. (Scope: this override set — and the driver-in-step pattern it supports — is for the block-spanning shape, `nodes_per_block=N, max_blocks=1`, verified end-to-end on production scans 2026-07/08. On the canonical one-block-per-node config a driver step is fatal and `--ntasks-per-node 1` must not be added — see the EXCEPTION below.)
 
-**Why the driver goes on a compute node (and why you still detach):** an unwrapped `bash -c '…'` body executes on the login/submit node, exposed to two independent killers: (a) **SIGHUP** when your ssh drops or the login node reboots — the ~20–30 min failure people hit on long scans; (b) **SIGTERM from NERSC login-node process policing**, which reaps busy login-resident processes at random (observed: a healthy 12-GPU scan torn down at 38 min while identical launches elsewhere survived 2.5 h+; `setsid` does not block SIGTERM). The `srun --overlap -N1 -n1` wrapper removes the policing target: the only login-resident piece left is the near-idle `salloc` client. **Still detach the launch** (`setsid …` / `nohup …`) — salloc itself dies with your ssh session otherwise (SIGHUP). For a run that may exceed the 4 h interactive cap, use **`sbatch`** instead (below).
+**Why the driver goes on a compute node (and why you still detach):** an unwrapped `bash -c '…'` body executes on the login/submit node, exposed to two independent killers: (a) **SIGHUP** when your ssh drops or the login node reboots — the ~20–30 min failure people hit on long scans; (b) **SIGTERM from NERSC login-node process policing**, which reaps busy login-resident processes at random (observed: a healthy 12-GPU scan torn down at 38 min while identical launches elsewhere survived 2.5 h+; `setsid` does not block SIGTERM). The `srun --overlap -N1 -n1` wrapper removes the policing target: the only login-resident piece left is the near-idle `salloc` client. **Detach the launch ON THE LOGIN NODE, never locally** — the `nohup setsid salloc … &` above runs *inside* the ssh command so the salloc client survives anything that happens to your machine. A locally-detached `setsid ssh -tt … salloc …` is NOT safe: `-tt` allocates a remote tty that salloc binds to, so anything that kills the local ssh (closing the session, laptop sleep, local cleanup) SIGHUPs salloc and revokes the whole allocation mid-run (observed 2026-08-09: a healthy 2-wave scan torn down at 28 min, both steps SIGTERM'd together, when the local session closed; the remote-detached form was validated the same day by a run that completed through a deliberate session close AND a SIGTERM of its launching ssh). Send the log to `$PSCRATCH/<repo>/workdir/` (excluded from sync `--delete`, readable via `read-log.sh`) — never local `/tmp`, which dies with your session.
+
+**Why that 2026-07-03 result and the 2026-08-11 failure below are both real** — worth knowing, because the two look contradictory: the July run's worker step was **`.1` spanning all nodes**, i.e. *one* srun for the whole allocation (`nodes_per_block=N, max_blocks=1`), which coexists with a driver step. The canonical config is one srun **per node** (`nodes_per_block=1, max_blocks=nodes`), and those are what fail to bind CPUs when a driver step already exists. So the discriminator is the provider shape, not the framework: with the canonical one-block-per-node config the wrapper is fatal. (Inference from the step layout each note recorded, not a third measurement.) Since the sharded layout also moved to one-block-per-node, **every parsl config in these skills now wants the driver off-step** — see the EXCEPTION below.
 
 > ### EXCEPTION — a multi-node *parsl* driver must NOT be inside an `srun` step
 >
@@ -367,6 +480,14 @@ ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=
 > |---|---|
 > | interactive (`salloc --no-shell`) | **login node**, with `SLURM_JOB_ID=<jobid>` exported, backgrounded with `nohup` |
 > | batch (`sbatch`) | the sbatch body **directly** — no `srun` wrapper |
+>
+> **The login-node row assumes a `SrunLauncher` in the provider.** It is the launcher, not
+> the allocation, that puts workers on compute nodes: a launcher-less `LocalProvider` forks
+> its worker pool as a *child of the driver*, so from a login node every worker runs **on the
+> login node** while your allocation sits idle — silently, with correct results (measured
+> 2026-08-16: 64 JAX workers took `login28` from load ~6 to 122; the only tell was
+> `'hostname': 'login28'` in `interchange.log`). See the `adept-run` skill for the full
+> driver-placement × launcher table.
 >
 > ```bash
 > # interactive: allocate, then drive from the login node
@@ -400,7 +521,7 @@ ssh -tt perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=
 
 ### Multi-node alternative: sbatch (no detach)
 
-This is an **alternative** to detaching the multi-node one-shot, not a replacement: for runs **≤ 4 h, prefer the detached one-shot** (interactive, faster to schedule; with the `srun --overlap -N1 -n1` driver wrapper it is equally login-independent apart from the idle salloc client). Reach for `sbatch` when a run may exceed the 4 h interactive cap. **`sbatch` cannot use the interactive QOS** — Perlmutter rejects it at submission (`sbatch: error: Cannot submit batch jobs to gpu_interactive_ss11`, tested 2026-07-03) — so batch jobs ride the `regular` queue (slower to schedule). A batch job runs its script on a **compute node under SLURM**, with nothing tied to your terminal — so ssh drops and login reboots can't kill it, and no `setsid` / `nohup` is needed. The parsl part is unchanged: the script still runs `python -u scan.py` with **no outer srun** (the sbatch script already executes on the head compute node, so the driver needs no placement wrapper there; parsl's `SrunLauncher` does the internal `srun --overlap`).
+This is an **alternative** to detaching the multi-node one-shot, not a replacement: for runs **≤ 4 h, prefer the detached one-shot** (interactive, faster to schedule; with the `srun --overlap -N1 -n1` driver wrapper it is equally login-independent apart from the idle salloc client). Reach for `sbatch` when a run may exceed the 4 h interactive cap. **`sbatch` cannot use the interactive QOS** — Perlmutter rejects it at submission (`sbatch: error: Cannot submit batch jobs to gpu_interactive_ss11`, tested 2026-07-03) — so batch jobs ride the `regular` queue (slower to schedule). A batch job runs its script on a **compute node under SLURM**, with nothing tied to your terminal — so ssh drops and login reboots can't kill it, and no `setsid` / `nohup` is needed. The parsl part is unchanged: the script still runs `python -u scan.py` with **no outer srun** (the sbatch script already executes on the head compute node, so the driver needs no placement wrapper there; parsl's `SrunLauncher` does the internal srun — which has no `--overlap`; see the warning above about never adding it to the overrides).
 
 Copy the template `skills/nersc-workflow/run-scan.sbatch` into the campaign next to its `scan.py`, set `DRIVER`, then submit + monitor:
 
@@ -417,11 +538,11 @@ The template hardcodes `--qos=regular` (the interactive QOS rejects sbatch — s
 | | Detached salloc one-shot (srun-wrapped driver) | sbatch |
 | --- | --- | --- |
 | Pros | Interactive QOS, nodes now (no batch queue); fast dev iteration; driver on a compute node (policing/reboot-immune) | Compute-node driver — immune to ssh drops *and* login reboots; no detach ceremony; `regular` lifts the interactive walltime cap |
-| Cons | Idle `salloc` client still lives on the login node (dies if the login node itself reboots); manual `setsid`/`disown` ceremony, easy to fumble | `regular` queue only (interactive QOS rejects sbatch) — not instant; less live/interactive |
+| Cons | Idle `salloc` client still lives on the login node (dies if the login node itself reboots); manual remote-detach ceremony (`nohup setsid` inside the ssh, no `-tt`, log on scratch), easy to fumble | `regular` queue only (interactive QOS rejects sbatch) — not instant; less live/interactive |
 
 Rule of thumb: **multi-node ≤ 4 h → detached one-shot with the `srun --overlap -N1 -n1` driver wrapper (preferred); a run that may exceed 4 h → `sbatch` on `regular`.** For a multi-node **parsl** scan, drop the `srun` wrapper — see the exception above.
 
-**One more reason batch may be the only option: the interactive QOS caps SUBMITTED jobs at 2 per user.** A third `salloc` is refused at submit time, not queued:
+**The interactive QOS caps SUBMITTED jobs at 2 per user.** A third `salloc` is refused at submit time, not queued:
 
 ```
 salloc: error: QOSMaxSubmitJobPerUserLimit
@@ -441,20 +562,33 @@ Measured 2026-08-11: `gpu_interactive` = 4 h wall, **4 nodes per job**, **2 subm
 REPO=$(basename "$PWD")
 SW=$(~/.claude/scripts/ergodic/show-config.sh EC_SOFTWARE_ROOT)
 JOBID=<id from squeue>
-ssh perlmutter "srun --jobid=${JOBID} --overlap bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py'"
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid srun --jobid=${JOBID} --overlap bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-${JOBID}.log 2>&1 < /dev/null &"
 ```
+
+Detach it the same way as the one-shot (remote `nohup setsid`, log on `workdir/`): a parked allocation is owned by SLURM with no client anywhere, so a dead attach client only costs the current *step* — the allocation survives and you re-attach (make the driver idempotent, e.g. a `--skip-done` flag, so a re-attach resumes instead of duplicating). To bill a different project than your configured one for a single launch, prefix the allocator with `EC_ACCOUNT=<account>` (e.g. `EC_ACCOUNT=m4490 interactive-gpu-node.sh 3 2`) — env vars override `~/.config/ergodic-claude/config.sh`, and salloc rejects on node-hour balance if the resolved account can't pay.
+
+**MULTI-NODE parsl: do not launch the driver into a parked allocation this way at all.** With the canonical one-block-per-node config (`nodes_per_block=1, max_blocks=nodes` — what every parsl config in these skills now uses) the driver must not occupy a job step: drive it from the **login node** per the EXCEPTION above, and everything below never arises.
+
+*If* you are on the block-spanning shape (`nodes_per_block=N, max_blocks=1`), where the driver legitimately sits in a job step, then the step env has to be scrubbed first. A driver started via `srun --jobid … -N1 -n1` runs inside a 1-node step whose SLURM env is scrambled (`SLURM_NNODES=1`, `SLURM_JOB_NUM_NODES` empty — probed 2026-07-21). Parsl's internal worker srun inherits it and packs ALL managers onto ONE node (4 runs/GPU, other nodes idle, ~4x slowdown — this silently ruined two 4-node campaign launches before diagnosis; with explicit `--nodes` in the overrides it instead fails loudly with "Only allocated 1 nodes asked for 4"). Fix, verified end-to-end: scrub the step env in the driver's shell before python, keeping only the job id and cluster name — and detach it the same way as every other launch here:
+
+```bash
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid srun --jobid=${JOBID} --overlap --nodes=1 --ntasks=1 bash -c 'for v in \$(env | grep -oE \"^SLURM_[A-Z_]+\"); do case \$v in SLURM_JOB_ID|SLURM_CLUSTER_NAME) ;; *) unset \$v;; esac; done; source … && python -u sims/<campaign>/scan.py' > \$PSCRATCH/${REPO}/workdir/scan-${JOBID}.log 2>&1 < /dev/null &"
+```
+
+plus explicit node count in the launcher overrides (`SrunLauncher(overrides=f"--nodes {nodes} --ntasks-per-node 1 --gpus-per-node 4")`). After ANY launcher or launch-style change, verify spread before walking away: `grep -ho "hostname.: .nid[0-9]*" runinfo/<latest>/*/interchange.log | sort | uniq -c` must show as many distinct worker nodes as the allocation has. (sbatch and salloc-one-shot drivers get the full job env and don't need the scrub — but the explicit `--nodes` override is cheap insurance everywhere.)
 
 Notes:
 - `python -u` for unbuffered output (so `tail -f` of the log is responsive).
 - `ergodic-claude.sh` provides `MLFLOW_TRACKING_URI` and (via `~/.mlflow_credentials`) `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`. If those are empty, the user hasn't filled in their credentials yet — point them at `vim ~/.mlflow_credentials` on Perlmutter.
-- For adept (the usual case), the entry point should be `uv run run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking.
-- The `--time=01:00:00` above is a polite default, **not** the cap: `gpu_interactive` allows 4 h (and 4 nodes, 2 submitted jobs — measured 2026-08-11, re-check with `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`). Past 4 h, switch to `--qos=regular`.
+- For adept (the usual case), the entry point should be `run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking. On a compute node run it as `python run.py …` after activating the venv, not `uv run` — that is what the recipes above do, and why.
+- The `--time=01:00:00` in the one-shot launches above is a polite default, **not** the cap: `gpu_interactive` allows 4 h (and 4 nodes, 2 submitted jobs — measured 2026-08-11, re-check with `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`). Past 4 h, switch to `--qos=regular`.
 
 ### Monitor
 
-**Local log (training stdout):**
+**Run log (training stdout — lives on `$PSCRATCH/<repo>/workdir/`, not locally).** The name depends on which launch path you used: one-shot → `<repo>-train.log`, parked attach → `<repo>-<jobid>.log`, parsl scan → `scan.log` / `scan-<jobid>.log`, sbatch → `<repo>-<jobid>.out`. List first if you're not sure, then read:
 ```bash
-tail -50 /tmp/nersc_$(basename "$PWD").log
+ssh perlmutter 'ls -t $PSCRATCH/'"$(basename "$PWD")"'/workdir/'
+~/.claude/scripts/ergodic/read-log.sh workdir/$(basename "$PWD")-train.log
 ```
 
 **SLURM queue:**
@@ -504,10 +638,7 @@ Identify the job id first, then cancel by id. **Never blanket-cancel by name or 
 ~/.claude/scripts/ergodic/scancel.sh <JOB_ID>
 ```
 
-Kill the local backgrounded ssh:
-```bash
-kill $(pgrep -f "ssh -tt perlmutter.*salloc.*$(basename "$PWD")")
-```
+Under the remote-detached pattern there is no local process to clean up — `scancel` the job id and the login-node salloc client exits on its own. (Only if you used the legacy locally-detached form: `kill $(pgrep -f "ssh.*perlmutter.*salloc.*$(basename "$PWD")")`.)
 
 ### Clean up remote artifacts
 
@@ -611,7 +742,7 @@ The venv step is fast after the first time. Don't skip it just because "it proba
 - The canonical order for a launch is: **sync → ensure venv → launch**. Never launch without checking the venv exists — undergrads and new joiners will not have run any setup manually.
 - When the user says "run on NERSC" or "launch training", do all three in order.
 - When iterating, cancel the old job first, then sync → ensure venv → relaunch. The venv check is cheap on the iteration path (just a pyproject hash check + no-op).
-- For monitoring, check the local log first (fastest). Fall back to `squeue` if the log is stale.
+- For monitoring, check the run log on `workdir/` first (`read-log.sh` — fastest). Fall back to `squeue` if the log is stale.
 - The `mlflow-query` skill is the right tool for checking metrics — use it alongside this one.
 - The `adept-run` skill is the right tool for deciding *what command to run* (ergoExo vs. parsl scan vs. direct module). This skill handles only the NERSC infra.
 - Destructive operations (cancel, cleanup) require explicit user confirmation.

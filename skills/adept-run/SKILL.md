@@ -63,9 +63,68 @@ If the user asks "run a simulation" / "launch adept" / similar, default to one o
 
 For sweeping a parameter (or grid of parameters), use [parsl](https://parsl.readthedocs.io/) with `LocalProvider`. Reasons:
 
-- `LocalProvider` launches workers within whatever resource you've already been given (your laptop, or a NERSC compute node inside `salloc`), so the same scan script runs both on a laptop CPU and on a Perlmutter GPU node without modification.
+- `LocalProvider` uses resources you already hold rather than submitting its own jobs, so the same scan script runs on a laptop and inside a Perlmutter allocation without modification.
 - It composes cleanly with `ergoExo` — each parsl task just calls `ergoExo`, so MLflow logging still happens per-run.
 - It avoids the complexity of `SlurmProvider` / `KubernetesProvider` until the user explicitly needs multi-node scale-out.
+
+> ### ⚠️ `LocalProvider` puts workers where the DRIVER runs — not "in the allocation"
+>
+> This is the single easiest way to melt a login node, and it fails **silently**: the scan
+> runs, tasks complete, results look fine. Holding an allocation is irrelevant; exporting
+> `SLURM_JOB_ID` is irrelevant. `LocalProvider`'s default launcher (`SingleNodeLauncher`)
+> forks the worker pool as a **child of the driver process**, so the workers inherit
+> whatever node the driver is sitting on.
+>
+> **Provider and launcher are orthogonal axes.** `LocalProvider` is nearly always the right
+> *provider*. What you must then get right is *where the driver runs*:
+>
+> | driver runs on | launcher | correct? |
+> |---|---|---|
+> | compute node (`srun`'d in, or an `sbatch` body) | default `SingleNodeLauncher` | ✅ workers on the compute node |
+> | login node (`salloc --no-shell` + `SLURM_JOB_ID`) | default `SingleNodeLauncher` | ❌ **every worker on the login node** |
+> | login node (`salloc --no-shell` + `SLURM_JOB_ID`) | `SrunLauncher(...)` | ✅ workers pushed into the allocation |
+>
+> Both ✅ rows are valid; they are two different, self-consistent patterns. The failure is
+> **mixing them** — taking the login-node driver placement from the multi-node GPU example
+> below while keeping the launcher-less provider from the single-node template above. That
+> is the ❌ row, and it looks exactly like the ✅ rows until you check hostnames.
+>
+> **`interactive-cpu.sh` / `interactive-gpu*.sh` use `salloc --no-shell`**, so they never
+> give you a shell on the compute node. After running one you are on a **login node**, which
+> means you must either `srun` the driver in, or add `SrunLauncher`. Measured 2026-08-16:
+> a 64-worker CPU scan launched this way put 64 JAX processes on `login28` and drove its
+> load average from ~6 to **122** for several minutes, while the allocated node sat idle.
+>
+> **Guard it in code — don't rely on remembering.** Cheap, and it converts a silent
+> node-melt into an instant, obvious failure:
+>
+> ```python
+> import os
+> import socket
+>
+> # Gate on NERSC_HOST so the same script still runs on a laptop, where there is no
+> # compute node to be on. Perlmutter compute nodes are nid<digits>; login nodes are login<n>.
+> def _on_nersc_login() -> str | None:
+>     host = socket.gethostname()
+>     if os.environ.get("NERSC_HOST") and not host.startswith("nid"):
+>         return host
+>     return None
+>
+> # in the driver, before dispatching any futures
+> if host := _on_nersc_login():
+>     raise SystemExit(f"refusing to start: driver on {host!r}, not a compute node")
+>
+> # and inside the parsl app itself, as a backstop
+> if host := _on_nersc_login():
+>     return {"status": f"refused: worker on non-compute node {host!r}"}
+> ```
+>
+> **Verify within 60 s of every launch**, before walking away — the interchange log records
+> the manager's hostname explicitly:
+>
+> ```bash
+> grep -o "'hostname': '[^']*'" runinfo/*/*/interchange.log | sort -u   # must be nid*, never login*
+> ```
 
 ### Starter template
 
@@ -276,14 +335,263 @@ above gives one *independent* run per GPU, which is what a scan wants. For a sin
 change only the accelerator spec to a grouped list, `available_accelerators=["0,1,2,3"]`
 (verified 2026-08-11: one manager per node, `Accelerators: 0,1,2,3`, one 4-GPU worker each).
 Both layouts run on `nodes_per_block=1, max_blocks=nodes` — there is no second provider shape
-to remember, and **don't** add `--ntasks-per-node 1` to the launcher overrides. Sharding buys
-throughput, not memory: see "Probe device memory" below.
+to remember, and **don't** add `--ntasks-per-node 1` to the launcher overrides. Within one
+process, sharding buys throughput, not memory: see "Probe device memory" below. To actually
+distribute memory, you need the multi-node sharded run below.
+
+### Multi-node sharded run — ONE simulation across N nodes (jax.distributed)
+
+The mechanism is **verified on Perlmutter** (2026-08-11, 4 nodes x 4 A100 = 16 GPUs):
+after `jax.distributed.initialize()`, `jax.devices()` returns all 16 devices
+node-contiguously, `Mesh(np.array(jax.devices()), ("device",))` + `shard_map` compile
+unchanged, and GSPMD's cross-node all-to-all runs at the Slingshot NIC ceiling. Smoke
+test + measured numbers live in vp-turbulence: `scripts/run/smoke_multinode.py` and
+`workdir/smoke-multinode.sbatch`.
+
+**Status: WORKING for vp-turbulence, adept untouched** (verified 2026-08-12 end to
+end, including a production merger-scan member). The reference implementation is
+`vp-turbulence/vp_turbulence/multinode.py` + `scripts/run/run_two_stream_multinode.py`
+(same `--cfg`/`--test` interface as the single-node runner; without srun it runs
+single-process) + `workdir/multinode.sbatch` (batch template, `CFG=...` via
+`--export`). adept needs no changes because its pushers already build their mesh over
+`jax.devices()` — global once distributed init runs. Everything multi-process actually
+changes sits AROUND the solve, and porting it to another adept project means copying
+`multinode.py` and swapping the module class.
+
+**Requires jax >= 0.10.2, as a coherent set.** On jax 0.9.0.1 + Perlmutter's CUDA 13
+driver, any sharded solve whose distribution function reaches ~1.5-2 GiB returns every
+output with `.sharding = UnspecifiedValue` — structurally unreadable, the run's output
+is lost at save time (root-caused in vp-turbulence, see its pyproject and
+`scripts/analysis/repro_unspecified.py`). Keep jax/jaxlib/jax-cuda12-plugin/
+jax-cuda12-pjrt at ONE version: sequential `uv pip install -U` calls can leave the
+plugin a minor version ahead, which silently drops the cusparse FFI handler the
+Fokker-Planck tridiagonal solve needs (`NOT_FOUND: cusparse_gtsv2_ffi`). A fresh venv
+build from pyproject resolves coherently; piecemeal upgrades are where this bites.
+
+**The three multi-process rules** (each one cost a failed run to learn):
+
+1. *State must be built as global arrays, and never via device_put.* Multi-process
+   `jax.device_put(host_array, <global sharding>)` VALIDATES the value is identical on
+   every process by gathering one copy per process onto device — 16 x 2.1 GiB = 32 GiB
+   OOM at the truth grid. `jax.make_array_from_callback(shape, sharding, lambda idx:
+   host[idx])` does no such check and materializes only each process's own shards.
+   `shard_state()` in multinode.py rebuilds the module's state this way after the
+   normal `init_state_and_args` (which runs identically everywhere — it all derives
+   from cfg, seeds included).
+2. *Nothing global may be closed over.* Multi-process jax refuses jit closures over
+   non-fully-addressable arrays ("Please pass such arrays as arguments"), and adept
+   modules read `y0` off `self.state` — i.e. filter_jit would close over it. The
+   runner swaps the state in as a traced argument with a three-line shim
+   (`_solve(state, mods, args): m.state = state; return m(mods, args)`).
+3. *Gathers are collectives; I/O is rank 0's.* `np.asarray` raises on
+   non-fully-addressable outputs, so ys/ts leaves are gathered with
+   `multihost_utils.process_allgather(x, tiled=True)` — by EVERY process, in the same
+   deterministic tree order — and only then does process 0 alone run post_process,
+   netcdf, plots, and MLflow (reusing adept's own `patched_mlflow`, `log_params`,
+   `robust_log_artifacts`, so runs look identical to ergoExo's). A collective inside a
+   rank-guarded branch hangs the job; keep the gather outside the guard.
+
+**Production flow that worked** (merger member L8000-t1200, 32768x2048, 240k steps):
+generate the member config with the scan's own `apply_member()` (never hand-copy the
+save-tier plumbing), then — because there is NO checkpoint/restart — measure before
+committing to a walltime: run ~1000 steps and ~2000 steps of the real config and
+difference the wall times to cancel compile (44.4 ms/step for that member on 16 GPUs;
+1000-step probe alone over-reads by ~35%). Only launch if steps x ms/step fits the
+window with >= 30 min margin. Detach the srun with `nohup` and log to a file — an
+expired sshproxy cert mid-run then costs only visibility, not the run.
+
+**Launch (proven):** allocation with `--ntasks-per-node=4 --gpus-per-node=4
+--cpus-per-task=32`; run `srun --ntasks-per-node=4 --gpus-per-node=4 python -u <script>`
+— one task per GPU, each process calling
+`jax.distributed.initialize(local_device_ids=[int(os.environ["SLURM_LOCALID"])])` before
+any other JAX call. **Not `--gpus-per-task`**: its per-task cgroup hides the other GPUs
+and breaks NVLink P2P between same-node ranks.
+
+**NCCL over Slingshot — plugin dir only, no `module load nccl`.** The module would
+shadow the venv's newer pip NCCL (2.29.3 vs 2.24.3) and drags in `cudatoolkit`, which
+conflicts with jax's pip CUDA (see `worker_init` above). Take only the plugin and the
+module's env (from `module show nccl/2.24.3`):
+
+```bash
+export LD_LIBRARY_PATH="/global/common/software/nersc9/nccl/2.24.3/plugin/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export NCCL_SOCKET_IFNAME=hsn
+export NCCL_NET="AWS Libfabric"
+export NCCL_NET_GDR_LEVEL=PHB
+export FI_CXI_DISABLE_HOST_REGISTER=1
+```
+
+Verify in the log (`NCCL_DEBUG=INFO`, `NCCL_DEBUG_SUBSYS=INIT,NET`): "Loaded net plugin
+AWS Libfabric" — a run that says "Using network Socket" is on TCP fallback and every
+timing from it is garbage.
+
+**The trap that costs a job:** `jax.device_put(host_array, <non-fully-addressable
+sharding>)` silently *validates* the value is identical on every process by gathering it
+— one copy per process stacked on device, so a 2.1 GB array x 16 processes attempted a
+32 GiB allocation and OOM'd. Materialize global state with
+`jax.make_array_from_callback(shape, sharding, lambda idx: host_array[idx])` (no
+cross-host check, each process builds only its own shards). Same class of trap on the way
+out: `np.asarray` on a non-fully-addressable array raises — gather small diagnostics via
+on-device replication (`process_allgather(x, tiled=True)` on the *global* array is fine),
+and write big arrays per-shard from `x.addressable_shards`.
+
+**Measured (f64, 16 GPUs / 4 nodes):** the x<->v transpose pair — one Vlasov step's
+communication load — costs 22.4 ms at 32768x8192 (2.15 GB state; bare all-to-all 7.2 ms,
+281 GB/s aggregate ≈ 70 GB/s/node ≈ the 4x25 GB/s NIC ceiling) and 87.6 ms at
+131072x8192 (8.6 GB — a state that cannot fit one 40 GB card with save buffers).
+End-to-end full solver (jax 0.10.2): 32768x8192 runs at <= 179 ms/step on 16 GPUs vs
+358 ms/step on one node — a >= 2x speedup — with the physics matching the single-node
+result bit-for-bit; 32768x2048 (merger members) runs at 44.4 ms/step. Communication
+does not dominate, and aggregate HBM (640 GB across 4 nodes) is the real prize.
 
 ### Picking `workers_per_node`
 
 - **On a laptop**: 1–4 depending on cores and solver size.
 - **On a NERSC GPU node**: one worker per GPU (`available_accelerators=4`) is the default — see the canonical multi-node config above. More than one run per GPU only if each is small enough to share VRAM.
-- **CPU node**: ~32–64 per node, but verify the solver isn't itself multi-threaded.
+- **CPU node**: one worker per **physical** core (128) — but JAX-on-CPU **is** multi-threaded, so see below.
+
+### CPU-node scan — pin the threads or everything crawls
+
+A Perlmutter CPU node is 128 physical cores / 256 logical (2× AMD EPYC 7763, SMT-2, 8 NUMA
+domains), and JAX-on-CPU grabs **all visible cores per process** by default. 64 unconstrained
+workers is therefore a 64× oversubscription: the node thrashes on context switches and every
+run is slower than it would be serially. So pin each worker and let parallelism come from the
+worker count.
+
+**The mask is the only knob.** XLA:CPU sizes its thread pools from the process's *schedulable*
+CPU count (`sched_getaffinity`) and there is no API or flag to set it directly — jaxlib 0.9
+exposes no `intra_op_parallelism_threads` XLA flag, and `make_cpu_client` takes no thread-pool
+argument. Measured thread count vs. mask width in one process: 1 core → 16 threads, 4 → 37,
+16 → 121, 64 → 425, 128 → 603. So `taskset` / `sched_setaffinity` / parsl's `cpu_affinity`
+*is* how you say "this process gets N cores". (`--xla_force_host_platform_device_count=N` is
+**not** it — its own help text says all those host devices share one thread pool.)
+
+```python
+single_thread = (
+    "export JAX_PLATFORMS=cpu; "
+    "export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; export OPENBLAS_NUM_THREADS=1; "
+    'export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"; '
+    "source $ECLAUDE_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
+)
+
+Config(executors=[HighThroughputExecutor(
+    label="cpu-scan",
+    max_workers_per_node=128,                   # one per PHYSICAL core
+    cpu_affinity="block",                       # keep each worker on its own cores
+    provider=LocalProvider(init_blocks=1, max_blocks=1, worker_init=single_thread),
+)])
+```
+
+> ### ⚠️ Start the driver under `taskset -c 0-127`, or half your workers collide
+>
+> `cpu_affinity="block"` splits **the mask parsl inherits**. On a full node that mask is all
+> 256 *logical* CPUs, and this node numbers hyperthread siblings as `c` and `c+128` — so the
+> first half of the blocks lands on physical cores and the second half lands on those same
+> cores' siblings. Workers `j` and `j+K/2` collide, each believing it owns its cores.
+> Measured with `max_workers_per_node=4`: spans `0-63`, `64-127`, `128-191`, `192-255` —
+> workers 0 and 2 are the same silicon. Restricting the driver first gives `0-31`, `32-63`,
+> `64-95`, `96-127`: disjoint physical cores, siblings left idle. This is not a tuning
+> preference — see the hyperthread row in the table below.
+
+Launch it with the driver **on the node** (see the *"`LocalProvider` puts workers where the
+DRIVER runs"* box in the parameter-scan section) — `LocalProvider` with the default launcher
+is then correct and no `SrunLauncher` is needed. **This is a one-node recipe**: the default
+launcher only ever fills the driver's own node, so allocating more than one node here leaves
+the rest idle. For a genuine multi-node scan use the `SrunLauncher` config above instead.
+
+```bash
+# 2 h, 1 node; prints a squeue line — take the JOBID from it. You are left on a login node.
+~/.claude/scripts/ergodic/interactive-cpu.sh 2 1
+ssh perlmutter "cd \$PSCRATCH/<repo> && mkdir -p workdir && nohup setsid srun --overlap \
+    --jobid=<JOBID> -N1 -n1 -c 256 --cpu-bind=none bash -lc '<activate…> \
+    taskset -c 0-127 python -u scripts/<scan>.py --n_workers 128' \
+    > \$PSCRATCH/<repo>/workdir/scan-<JOBID>.log 2>&1 < /dev/null &"
+```
+
+Detached remotely, logging to `workdir/`, for the reasons the `nersc-workflow` skill gives:
+a locally-detached `ssh` takes the step down with your session, and anything written outside
+`workdir/` is deleted by the next `sync-up --delete`.
+
+`--cpu-bind=none` matters: without it the driver's step binds to a subset of CPUs and its
+worker children inherit that binding, so the workers land on a handful of cores. It is what
+makes the whole node visible; the `taskset -c 0-127` then narrows that to physical cores.
+
+Measured 2026-08-16 (lagradept 1-D rad-hydro, nr=256, radiation on): **189 s per run**
+single-threaded, so a 512-point grid at 128 workers is ~13 min on one node.
+
+`max_workers_per_node` was 64 here until 2026-08-16. That left half the node idle: 64
+single-threaded workers on 128 physical cores. Raising it to 128 is close to a straight 2×
+on scan throughput and costs nothing.
+
+### How many cores per worker — measured
+
+Two questions, two different answers. Benchmark: same solver, truncated to 2 ns of problem
+time (17.2 s single-threaded), one node of Perlmutter CPU, jax 0.9 / jaxlib 0.9.
+
+**1. How fast can one run go?** One process alone on the node, steady-state solve time
+(compile excluded), `taskset` to N physical cores:
+
+| cores | 1 | 2 | 4 | 8 | 16 | 32 | 64 | 128 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| nr=256 | 17.2 s | 11.2 s | 8.7 s | **7.4 s** | 8.0 s | 8.3 s | 8.6 s | 9.8 s |
+| speedup | 1.00× | 1.53× | 1.99× | **2.33×** | 2.14× | 2.07× | 2.00× | 1.76× |
+| nr=1024 | 18.1 s | — | 7.8 s | **6.1 s** | 6.4 s | 6.3 s | 6.6 s | — |
+| speedup | 1.00× | — | 2.33× | **2.97×** | 2.85× | 2.89× | 2.77× | — |
+
+**The knee is 8 cores and it does not move.** 4× the cells raises the plateau (2.3× → 3.0×)
+but not its location, and past 8 cores more cores make the run *slower*. (nr=1024 was run for
+¼ the problem time so total work matches — the comparison isolates array size from step count.)
+There is no point ever handing a 1-D solve more than 8 cores.
+
+**2. How many runs per node-hour?** Whole node, K workers × C physical cores, K·C = 128, each
+task a fresh process (import + setup + compile + one solve) — what a scan actually pays:
+
+| cores/worker C | 1 | 2 | 4 | 8 | 16 |
+| --- | --- | --- | --- | --- | --- |
+| workers K | 128 | 64 | 32 | 16 | 8 |
+| makespan | 69.6 s | 37.1 s | 26.1 s | 21.8 s | 20.8 s |
+| node-s per run | **0.54** | 0.58 | 0.82 | 1.36 | 2.59 |
+| vs. C=1 | **1.00×** | 1.07× | 1.50× | 2.50× | 4.77× |
+
+**Throughput wants thin workers.** One core per worker is optimal; two is a wash (+7%); eight
+costs you 2.5× the node time for the same set of runs. So the single-threaded recipe above
+stays the default for scans — that is now measured, not asserted.
+
+**Hyperthreads never help.** Same K, but each worker also given its siblings (256 logical
+instead of 128 physical): K=128 69.6 → 70.7 s, K=64 37.1 → 39.7 s, K=32 26.1 → 30.8 s. The
+more siblings you hand out, the worse it gets. Leave CPUs 128–255 idle.
+
+### Fat workers — when you have fewer runs than cores
+
+The thin-worker default is a *throughput* optimum. It is the wrong choice when you have fewer
+runs than cores and care about finishing them, not about node-hours: 6 configs on a 128-core
+node leaves 122 cores idle at C=1. Give each run 8 cores (the knee) and it finishes 2.3–3.0×
+sooner for free.
+
+Drop the single-threading exports — parsl sets `OMP_NUM_THREADS` to the worker's core count
+itself, and XLA picks up the mask on its own:
+
+```python
+fat_workers = (
+    "export JAX_PLATFORMS=cpu; "                # no OMP_NUM_THREADS, no multi_thread_eigen=false
+    "source $ECLAUDE_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
+)
+
+Config(executors=[HighThroughputExecutor(
+    label="cpu-fat",
+    max_workers_per_node=16,                    # 16 x 8 physical cores = 128
+    cpu_affinity="block",
+    provider=LocalProvider(init_blocks=1, max_blocks=1, worker_init=fat_workers),
+)])
+```
+
+Same `taskset -c 0-127` on the driver, same reason. Pick `max_workers_per_node` as
+`128 // cores_per_worker` with `cores_per_worker <= 8`; anything above 8 buys nothing.
+
+**Re-measure the knee for a solver that isn't 1-D.** Everything above is a 1-D radiation-hydro
+grid, where the per-step arrays are far too small to feed 128 cores. A 2-D or large-`nv`
+kinetic solve has more work per step and the knee will sit further out. The measurement is
+cheap — one process, `taskset -c 0-$((n-1))`, double the cores until the solve time stops
+falling.
 
 Scaling past one node does **not** require `SlurmProvider` — use the multi-node
 `LocalProvider` config above inside an N-node allocation. Reach for `SlurmProvider` only when
@@ -323,11 +631,13 @@ allocation.
 
 Two traps worth stating plainly:
 
-- **Sharding one run across 4 GPUs does not reduce its memory.** adept's `grid.parallel` is
-  explicit: "one process, one node, no distributed memory… it does not let you run a bigger
-  one." The full distribution function is allocated on the default device and the state
-  `diffrax` carries stays a global array, so a 4-GPU run must still fit on **one** card. It buys
-  throughput only.
+- **Sharding one run across 4 GPUs in a single process does not reduce its memory.** adept's
+  `grid.parallel` is explicit: "one process, one node, no distributed memory… it does not let
+  you run a bigger one." The full distribution function is allocated on the default device and
+  the state `diffrax` carries stays a global array, so a 4-GPU run must still fit on **one**
+  card. It buys throughput only. Distributing memory takes the multi-node jax.distributed
+  path (see "Multi-node sharded run" above), which is working — via a wrapper around the
+  solve in vp-turbulence, with adept itself unchanged.
 - **A peak measured on a small case does not generalize.** 23.8 GB at `nx=8192` (55% of a 40 GB
   A100) does not license dropping `hbm80g` for `nx=32768` — those members needed 29–34 GiB
   single allocations and OOM'd. Measure the member you intend to run.
