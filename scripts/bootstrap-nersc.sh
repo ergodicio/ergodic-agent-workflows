@@ -13,7 +13,8 @@
 #   3. Writes <project-space>/$USER/ergodic-claude.sh with PATH, env vars,
 #      and a cd-hook that points uv at the right per-project venv
 #   4. Adds a single `. <project-space>/$USER/ergodic-claude.sh` line to
-#      ~/.bash_profile.ext and ~/.zshrc.ext (NERSC's documented user-customization files)
+#      ~/.bashrc and ~/.zshrc, and chains ~/.bash_profile -> ~/.bashrc if needed
+#      (Perlmutter does not source the Cori-era ~/.bash_profile.ext / ~/.zshrc.ext files)
 #   5. Creates ~/.mlflow_credentials (mode 600) with placeholders, if missing
 #   6. Installs NERSC's required agent rules into ~/.claude/CLAUDE.md *on Perlmutter*, so an
 #      agent started on a login node gets the same filesystem-traversal rules
@@ -22,9 +23,9 @@
 #
 # Idempotent — safe to re-run. Uses a marker line in the .ext files to avoid duplicate appends.
 #
-# IMPORTANT: this script touches only NERSC's documented .ext files. It does NOT modify
-# .bashrc, .zshrc, or .bash_profile directly. If you already have customizations there,
-# they're untouched.
+# IMPORTANT: this script only appends/refreshes a clearly-marked block in .bashrc,
+# .zshrc, and (if it doesn't already source .bashrc) .bash_profile. Existing
+# customizations in those files are untouched.
 
 set -euo pipefail
 
@@ -121,7 +122,7 @@ fi
 cat >"${ENV_FILE}" <<EOF
 #!/usr/bin/env bash
 # Managed by ergodic-claude/scripts/bootstrap-nersc.sh — re-run that to update.
-# Sourced from ~/.bash_profile.ext and ~/.zshrc.ext.
+# Sourced from ~/.bashrc and ~/.zshrc.
 
 # uv: binary on PATH, Pythons and cache in global common (persistent).
 #
@@ -160,9 +161,12 @@ EOF
 chmod 644 "${ENV_FILE}"
 echo "[remote] wrote ${ENV_FILE}"
 
-# 4. Wire into .bash_profile.ext and .zshrc.ext (NERSC's customization files).
+# 4. Wire into ~/.bashrc and ~/.zshrc. Perlmutter does NOT use the Cori-era
+#    ~/.bash_profile.ext / ~/.zshrc.ext convention — nothing sources those files —
+#    so the env must go into the real dotfiles. bash also reads ~/.bashrc for
+#    non-interactive ssh commands, which is what the workflow scripts run.
 #    Use a marker line so re-runs don't duplicate.
-for f in "${HOME}/.bash_profile.ext" "${HOME}/.zshrc.ext"; do
+for f in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
   touch "$f"
   if grep -qF "$MARKER" "$f"; then
     # Already wired; refresh the block between markers
@@ -179,6 +183,32 @@ for f in "${HOME}/.bash_profile.ext" "${HOME}/.zshrc.ext"; do
     } >> "$f"
   fi
   echo "[remote] wired $f"
+done
+
+# Login shells read ~/.bash_profile, not ~/.bashrc — chain them if the profile
+# doesn't already do so. Skip entirely if it mentions .bashrc anywhere.
+PROFILE="${HOME}/.bash_profile"
+touch "$PROFILE"
+if ! grep -q '\.bashrc' "$PROFILE"; then
+  {
+    printf "\n%s\n" "$MARKER"
+    printf '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n'
+    printf "%s\n" "$END_MARKER"
+  } >> "$PROFILE"
+  echo "[remote] wired $PROFILE -> ~/.bashrc"
+fi
+
+# Drop the stale managed block a pre-2026-08-17 bootstrap left in the .ext files
+# (nothing sources them on Perlmutter, but dead wiring invites confusion).
+for f in "${HOME}/.bash_profile.ext" "${HOME}/.zshrc.ext"; do
+  if [ -f "$f" ] && grep -qF "$MARKER" "$f"; then
+    awk -v m="$MARKER" -v e="$END_MARKER" '
+      $0 ~ m   {in_block=1; next}
+      $0 ~ e   {in_block=0; next}
+      !in_block {print}
+    ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    echo "[remote] removed stale block from $f"
+  fi
 done
 
 # 5. ~/.mlflow_credentials placeholder (only if missing — never clobber real creds)
