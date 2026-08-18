@@ -77,7 +77,7 @@ ec_require_account() {
 
 [ergodic-claude] No NERSC account configured — refusing to guess which project to bill.
 
-Your projects:   ~/.claude/scripts/ergodic/list-accounts.sh
+Your projects:   ~/.ergodic-claude/ops/list-accounts.sh
 Set one:         mkdir -p "$(dirname "$EC_CONFIG")"
                  echo ': "\${EC_ACCOUNT:=m4490}"' >> "$EC_CONFIG"
 Or per command:  EC_ACCOUNT=m4490 $0 ...

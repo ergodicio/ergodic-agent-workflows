@@ -10,13 +10,13 @@ Query the MLflow tracking server (https://continuum.ergodic.io/experiments/) to 
 
 ## Helper scripts (prefer for common ops)
 
-These wrappers live at `~/.claude/scripts/ergodic/` (symlinked by `bootstrap-local.sh`) and can be allowlisted in one rule (`Bash(~/.claude/scripts/ergodic/*)`). Use them for the most common single-run lookups; fall back to inline Python (below) for anything bespoke (filtering, ranges, metric history, custom searches).
+These wrappers live at `~/.ergodic-claude/ops/` (symlinked by `bootstrap-local.sh`). Use them for the most common single-run lookups; fall back to inline Python (below) for anything bespoke (filtering, ranges, metric history, custom searches).
 
 | Need | Script |
 | --- | --- |
-| Dump params + metrics + tags for one run | `~/.claude/scripts/ergodic/mlflow-get-params.py <run_id>` |
-| List artifact paths for a run | `~/.claude/scripts/ergodic/mlflow-list-artifacts.sh <run_id> [subpath]` |
-| Download one artifact to `/tmp/` | `~/.claude/scripts/ergodic/mlflow-download-artifact.sh <run_id> <artifact_path>` |
+| Dump params + metrics + tags for one run | `~/.ergodic-claude/ops/mlflow-get-params.py <run_id>` |
+| List artifact paths for a run | `~/.ergodic-claude/ops/mlflow-list-artifacts.sh <run_id> [subpath]` |
+| Download one artifact to `/tmp/` | `~/.ergodic-claude/ops/mlflow-download-artifact.sh <run_id> <artifact_path>` |
 
 All three resolve dependencies via `uv run --with mlflow --with boto3 --quiet python` and read `MLFLOW_TRACKING_*` + AWS creds from the environment.
 
@@ -34,7 +34,7 @@ MLFLOW_TRACKING_PASSWORD=<token>
 
 ```python
 import os, sys
-sys.path.insert(0, os.path.expanduser("~/.claude/scripts/ergodic"))
+sys.path.insert(0, os.path.expanduser("~/.ergodic-claude/ops"))
 import _mlflow_patched as mlflow
 client = mlflow.MlflowClient()
 ```
