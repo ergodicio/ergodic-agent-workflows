@@ -500,7 +500,7 @@ the rest idle. For a genuine multi-node scan use the `SrunLauncher` config above
 
 ```bash
 # 2 h, 1 node; prints a squeue line — take the JOBID from it. You are left on a login node.
-~/.claude/scripts/ergodic/interactive-cpu.sh 2 1
+~/.ergodic-claude/ops/interactive-cpu.sh 2 1
 ssh perlmutter "cd \$PSCRATCH/<repo> && mkdir -p workdir && nohup setsid srun --overlap \
     --jobid=<JOBID> -N1 -n1 -c 256 --cpu-bind=none bash -lc '<activate…> \
     taskset -c 0-127 python -u scripts/<scan>.py --n_workers 128' \
@@ -596,7 +596,7 @@ falling.
 Scaling past one node does **not** require `SlurmProvider` — use the multi-node
 `LocalProvider` config above inside an N-node allocation. Reach for `SlurmProvider` only when
 the scan itself should submit and own its jobs (and then don't hardcode the account: read it
-from `~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU`).
+from `~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU`).
 
 ### Sizing a scan: measure ms/step, don't read MLflow durations
 
