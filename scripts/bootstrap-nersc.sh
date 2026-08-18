@@ -12,8 +12,9 @@
 #        $PSCRATCH/                                 (working area for synced repos)
 #   3. Writes <project-space>/$USER/ergodic-claude.sh with PATH, env vars,
 #      and a cd-hook that points uv at the right per-project venv
-#   4. Adds a single `. <project-space>/$USER/ergodic-claude.sh` line to
-#      ~/.bashrc and ~/.zshrc, and chains ~/.bash_profile -> ~/.bashrc if needed
+#   4. Prepends a marked block sourcing <project-space>/$USER/ergodic-claude.sh to
+#      ~/.bashrc, ~/.zshenv, and ~/.bash_profile — at the TOP, so it runs before any
+#      "return unless interactive" guard those files commonly start with
 #      (Perlmutter does not source the Cori-era ~/.bash_profile.ext / ~/.zshrc.ext files)
 #   5. Creates ~/.mlflow_credentials (mode 600) with placeholders, if missing
 #   6. Installs NERSC's required agent rules into ~/.claude/CLAUDE.md *on Perlmutter*, so an
@@ -21,11 +22,11 @@
 #
 # Run from your laptop. Requires that `ssh perlmutter` works (sshproxy set up).
 #
-# Idempotent — safe to re-run. Uses a marker line in the .ext files to avoid duplicate appends.
+# Idempotent — safe to re-run. Marker lines make re-runs replace the managed block
+# instead of duplicating it.
 #
-# IMPORTANT: this script only appends/refreshes a clearly-marked block in .bashrc,
-# .zshrc, and (if it doesn't already source .bashrc) .bash_profile. Existing
-# customizations in those files are untouched.
+# IMPORTANT: this script only installs/refreshes a clearly-marked block at the top of
+# .bashrc, .zshenv, and .bash_profile. Existing customizations in those files are untouched.
 
 set -euo pipefail
 
@@ -122,7 +123,12 @@ fi
 cat >"${ENV_FILE}" <<EOF
 #!/usr/bin/env bash
 # Managed by ergodic-claude/scripts/bootstrap-nersc.sh — re-run that to update.
-# Sourced from ~/.bashrc and ~/.zshrc.
+# Sourced from the managed blocks at the top of ~/.bashrc, ~/.zshenv, and ~/.bash_profile.
+
+# A login shell can hit this twice — once from ~/.bash_profile, once more if the
+# user's profile chains to ~/.bashrc. Make the second source a no-op.
+[ -n "\${_ECLAUDE_ENV_SOURCED:-}" ] && return 0
+_ECLAUDE_ENV_SOURCED=1
 
 # uv: binary on PATH, Pythons and cache in global common (persistent).
 #
@@ -161,46 +167,44 @@ EOF
 chmod 644 "${ENV_FILE}"
 echo "[remote] wrote ${ENV_FILE}"
 
-# 4. Wire into ~/.bashrc and ~/.zshrc. Perlmutter does NOT use the Cori-era
-#    ~/.bash_profile.ext / ~/.zshrc.ext convention — nothing sources those files —
-#    so the env must go into the real dotfiles. bash also reads ~/.bashrc for
-#    non-interactive ssh commands, which is what the workflow scripts run.
-#    Use a marker line so re-runs don't duplicate.
-for f in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
+# 4. Wire into ~/.bashrc, ~/.zshenv, and ~/.bash_profile. Perlmutter does NOT use
+#    the Cori-era ~/.bash_profile.ext / ~/.zshrc.ext convention — nothing sources
+#    those files — so the env must go into the real dotfiles. The block is
+#    PREPENDED: stock ~/.bashrc files often open with a "return unless interactive"
+#    guard (`case $- in *i*) ;; *) return;; esac`), and an appended block would sit
+#    unreachable below it for exactly the non-interactive shells the workflow
+#    scripts run (`ssh perlmutter …`, `bash -lc`). Sourcing from ~/.bash_profile
+#    too covers login shells whose profile never chains to ~/.bashrc;
+#    ergodic-claude.sh makes the second source in a chained profile a no-op.
+#    For zsh the file is ~/.zshenv — the one zsh reads in EVERY mode (login,
+#    interactive, non-interactive, scripts); ~/.zshrc is interactive-only and
+#    would leave `ssh perlmutter cmd` blind for zsh users.
+#    Marker lines let re-runs replace the block wherever an old run left it.
+for f in "${HOME}/.bashrc" "${HOME}/.zshenv" "${HOME}/.bash_profile"; do
   touch "$f"
   if grep -qF "$MARKER" "$f"; then
-    # Already wired; refresh the block between markers
-    awk -v m="$MARKER" -v e="$END_MARKER" -v src=". \"${ENV_FILE}\"" '
-      $0 ~ m       {print; print src; in_block=1; next}
-      $0 ~ e       {print; in_block=0; next}
-      !in_block    {print}
+    # Strip the old managed block (pre-2026-08-18 runs appended it at the bottom,
+    # or chained ~/.bash_profile -> ~/.bashrc here) before prepending fresh.
+    awk -v m="$MARKER" -v e="$END_MARKER" '
+      $0 ~ m   {in_block=1; next}
+      $0 ~ e   {in_block=0; next}
+      !in_block {print}
     ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
-  else
-    {
-      printf "\n%s\n" "$MARKER"
-      printf ". \"%s\"\n" "$ENV_FILE"
-      printf "%s\n" "$END_MARKER"
-    } >> "$f"
   fi
-  echo "[remote] wired $f"
+  {
+    printf "%s\n" "$MARKER"
+    printf "# Stays at the top of this file: must run before any 'return unless interactive' guard.\n"
+    printf ". \"%s\"\n" "$ENV_FILE"
+    printf "%s\n\n" "$END_MARKER"
+    cat "$f"
+  } > "$f.tmp" && mv "$f.tmp" "$f"
+  echo "[remote] wired $f (managed block at top)"
 done
 
-# Login shells read ~/.bash_profile, not ~/.bashrc — chain them if the profile
-# doesn't already do so. Skip entirely if it mentions .bashrc anywhere.
-PROFILE="${HOME}/.bash_profile"
-touch "$PROFILE"
-if ! grep -q '\.bashrc' "$PROFILE"; then
-  {
-    printf "\n%s\n" "$MARKER"
-    printf '[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n'
-    printf "%s\n" "$END_MARKER"
-  } >> "$PROFILE"
-  echo "[remote] wired $PROFILE -> ~/.bashrc"
-fi
-
-# Drop the stale managed block a pre-2026-08-17 bootstrap left in the .ext files
-# (nothing sources them on Perlmutter, but dead wiring invites confusion).
-for f in "${HOME}/.bash_profile.ext" "${HOME}/.zshrc.ext"; do
+# Drop the stale managed block older bootstraps left elsewhere: the Cori-era .ext
+# files (nothing sources them on Perlmutter) and ~/.zshrc (superseded by ~/.zshenv,
+# which zsh reads in every mode instead of only interactively).
+for f in "${HOME}/.bash_profile.ext" "${HOME}/.zshrc.ext" "${HOME}/.zshrc"; do
   if [ -f "$f" ] && grep -qF "$MARKER" "$f"; then
     awk -v m="$MARKER" -v e="$END_MARKER" '
       $0 ~ m   {in_block=1; next}
