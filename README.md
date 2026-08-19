@@ -6,6 +6,8 @@ After installing this once, you can run Claude Code or Codex from any project re
 
 > sync and launch this on NERSC
 
+> run this single-GPU simulation on AWS Batch
+
 > how is the run going
 
 > cancel the current job and rerun with batch size 32
@@ -19,6 +21,7 @@ After installing this once, you can run Claude Code or Codex from any project re
 | Path | What it is |
 | --- | --- |
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
+| `skills/aws-batch-run/` | Skill that bundles a local simulation checkout and handles the submit / monitor / logs / terminate cycle on AWS Batch |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
 | `scripts/ops/` | Thin wrappers around safe `ssh perlmutter "…"` invocations (squeue, sacct, scancel, interactive-gpu, sync-up, log read/grep, mlflow get-params/list/download-artifact, show-config, list-accounts). Bootstrap symlinks these to `~/.ergodic-claude/ops/`, an agent-neutral stable path |
@@ -83,9 +86,19 @@ cd examples/first-run
 
 When you ask either agent something like "launch training on NERSC", it reads `nersc-workflow/SKILL.md`, derives paths from `$(basename $PWD)`, and runs the right rsync + salloc + srun for you. Output is teed to `/tmp/nersc_<repo>.log` and the ssh is backgrounded so you can keep working.
 
+When you ask it to run a single-node simulation on AWS Batch, it reads
+`aws-batch-run/SKILL.md`, uses `continuum-infra/sim-runner/submit.py` to upload a
+content-addressed bundle of the local working tree, submits the matching generic job definition,
+and follows the exact Batch job through CloudWatch and MLflow. Multi-GPU, multi-node, and
+interactive work stays on NERSC.
+
+The AWS workflow additionally expects the AWS CLI to be authenticated to the continuum account
+and a local `continuum-infra` checkout. Set `EC_CONTINUUM_INFRA` when that checkout is not a
+sibling of the simulation repository.
+
 When you ask "how's the run going", the agent reads `mlflow-query/SKILL.md`, uses `uv run python3` to hit the tracking server, and summarizes recent runs + loss history.
 
-The two skills don't know about each other directly — Claude composes them.
+The workflow skills do not call each other directly — the agent composes them for the task.
 
 ---
 

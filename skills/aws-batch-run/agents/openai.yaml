@@ -1,0 +1,4 @@
+interface:
+  display_name: "AWS Batch Run"
+  short_description: "Run and monitor simulations on AWS Batch"
+  default_prompt: "Use $aws-batch-run to submit this simulation to AWS Batch and monitor it through completion."
