@@ -35,7 +35,7 @@ fi
 # 2. Skills — the same SKILL.md files work with both agents.
 for skills_dir in "${CLAUDE_SKILLS_DIR}" "${CODEX_SKILLS_DIR}"; do
   mkdir -p "${skills_dir}"
-  for skill in nersc-workflow mlflow-query adept-run; do
+  for skill in nersc-workflow aws-batch-run mlflow-query adept-run; do
     src="${REPO_ROOT}/skills/${skill}"
     dst="${skills_dir}/${skill}"
     if [[ -e "${dst}" && ! -L "${dst}" ]]; then
