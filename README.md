@@ -21,7 +21,7 @@ After installing this once, you can run Claude Code or Codex from any project re
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
-| `scripts/ops/` | Thin wrappers around safe `ssh perlmutter "…"` invocations (squeue, sacct, scancel, interactive-gpu, sync-up, log read/grep, mlflow get-params/list/download-artifact, show-config, list-accounts). Bootstrap symlinks these to `~/.ergodic-claude/ops/`, an agent-neutral stable path |
+| `scripts/ops/` | Thin wrappers around reviewed NERSC operations, including isolated interactive development sessions, allocation, sync, job monitoring, and MLflow artifact access. Bootstrap symlinks these to `~/.ergodic-claude/ops/`, an agent-neutral stable path |
 | `rules/nersc-agent-rules.md` | NERSC's [required coding-agent rules](https://docs.nersc.gov/development/coding-agents/) — bounded filesystem search, secrets handling, agent conduct on shared systems |
 | `scripts/install-agent-rules.sh` | Installs that block into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, or both between managed markers (idempotent; backs up first) |
 | `~/.config/ergodic-claude/config.sh` | **Your** settings — which NERSC project to bill. Written by `bootstrap-nersc.sh`, outside the repo. `scripts/ops/show-config.sh` prints what resolved; `list-accounts.sh` lists the projects you can charge |
@@ -92,7 +92,43 @@ export MLFLOW_TRACKING_USERNAME=<your-username>
 export MLFLOW_TRACKING_PASSWORD=<your-token>
 ```
 
-The scripts are intentionally narrow wrappers — each one runs a single known-safe ssh command. Claude Code users can allowlist `Bash(~/.ergodic-claude/ops/*)` in their settings. Codex users should approve these scoped scripts when prompted; free-form `ssh perlmutter "…"` calls (used for venv mutation and custom launches) remain separate approval decisions.
+Most scripts are narrow wrappers around one reviewed operation and can be approved
+individually. Do not blanket-allow `~/.ergodic-claude/ops/*`: `session.sh exec` and
+`session.sh shell` deliberately provide arbitrary execution inside the current interactive
+allocation. Treat starting and using that time-bounded lease as an explicit approval;
+free-form `ssh perlmutter "…"` remains a separate decision.
+
+### Interactive development sessions
+
+For the fast edit–run–debug loop, create one persistent, isolated allocation and reuse it:
+
+```bash
+~/.ergodic-claude/ops/session.sh start --kind shared --hours 2 --gpus 1
+~/.ergodic-claude/ops/session.sh exec -- python run.py --cfg example
+
+# edit locally, including uncommitted changes, then refresh the same node
+~/.ergodic-claude/ops/session.sh sync
+~/.ergodic-claude/ops/session.sh exec -- pytest tests/test_solver.py
+
+# use a real terminal when needed
+~/.ergodic-claude/ops/session.sh shell
+~/.ergodic-claude/ops/session.sh stop
+```
+
+`--kind shared` is the quick 1–2 GPU path. `--kind gpu --nodes N` requests whole GPU
+nodes, and `--kind cpu --nodes N` requests CPU nodes. Sessions last at most four hours.
+
+Each session owns a unique `$PSCRATCH/<repo>-sessions/<session-id>/` directory with separate
+`src/`, `workdir/`, and `outputs/` children. `sync` accepts a dirty worktree and removes stale
+synchronized source only from that disposable `src/` directory; logs and outputs are
+siblings and are never deleted. Standard run-output directories inside `src/` are excluded
+and protected as well.
+The base commit, dirty status, diff, and workspace fingerprint are recorded with the session.
+No GitHub push or fetch occurs during this loop.
+
+When a result should become durable or reproducible, commit and push the code and promote it
+to a commit-pinned run with `launch-pinned.sh`. Dirty and fast is intentional for interactive
+debugging; clean and immutable is the boundary for production runs.
 
 Open a new shell to pick those up, then prove it all works with the demo:
 
@@ -105,7 +141,10 @@ cd examples/first-run
 
 ## How the skills work together
 
-When you ask either agent something like "launch training on NERSC", it reads `nersc-workflow/SKILL.md`, derives paths from `$(basename $PWD)`, and runs the right rsync + salloc + srun for you. Output is teed to `/tmp/nersc_<repo>.log` and the ssh is backgrounded so you can keep working.
+When you ask either agent to debug or iterate on NERSC, it reads
+`nersc-workflow/SKILL.md`, creates or reuses an isolated interactive session, syncs the
+current worktree, and runs the calculation inside that allocation. Production and
+long-queue runs instead use commit-pinned batch paths, with logs kept on scratch.
 
 When you ask "how's the run going", the agent reads `mlflow-query/SKILL.md`, uses `uv run python3` to hit the tracking server, and summarizes recent runs + loss history.
 
@@ -155,6 +194,7 @@ The `nersc-workflow` skill assumes:
 | Thing | Where |
 | --- | --- |
 | Code (synced from your laptop) | `$PSCRATCH/<repo>/` |
+| Interactive session | `$PSCRATCH/<repo>-sessions/<session-id>/{src,workdir,outputs}` |
 | Run outputs (checkpoints, plots, logs) | inside that same `$PSCRATCH/<repo>/` |
 | uv venv | `$SW/$USER/venvs/<repo>` (also `$ECLAUDE_VENVS/<repo>` on Perlmutter) |
 | uv-managed Pythons | `$SW/$USER/uv-python/` |
@@ -192,7 +232,8 @@ scripts/ops/list-accounts.sh    # projects you can actually charge, per SLURM
 
 **Important: `/global/common/software/` is mounted read-only on compute nodes.** All venv creation and `uv` installs happen on login nodes — `bootstrap-nersc.sh` and the `nersc-workflow` skill enforce this so you don't have to think about it. If you're debugging interactively inside an `salloc`, don't try to `uv sync` or `pip install` — exit, do it on the login node, then re-allocate.
 
-Your laptop's repo is the source of truth. Edit locally, `rsync` to NERSC, run.
+Your laptop's repo is the source of truth. For interactive debugging, edit locally and use
+`session.sh sync`; for the legacy shared tree, use `sync-up.sh`.
 
 ---
 
