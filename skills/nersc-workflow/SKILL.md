@@ -232,10 +232,14 @@ every member** — m4490 is capped at 100 GB across all users. One person's dupl
 wheels exhaust the quota for the whole team. `showquota` does **not** report this
 filesystem; the only signal is `Disk quota exceeded` on write.
 
-Check where the cache is pointing. **Use `bash -lc`** — `UV_CACHE_DIR` is exported from
-`ergodic-claude.sh`, which only a login shell sources, and the env var beats any
-`~/.config/uv/uv.toml`. A bare `ssh perlmutter 'uv cache dir'` reads the wrong thing and
-will tell you everything is fine when it isn't:
+Check where the cache is pointing. `UV_CACHE_DIR` is exported from `ergodic-claude.sh`,
+sourced from a managed block **prepended** to `~/.bashrc` and `~/.bash_profile`
+(since 2026-08-18). Older bootstraps wired it where non-interactive shells never saw
+it — first the Cori-era `~/.bash_profile.ext`, which nothing on Perlmutter sources,
+then appended below any "return unless interactive" guard in `~/.bashrc` — and uv
+silently fell back to `~/.cache/uv`. The env var beats any `~/.config/uv/uv.toml`.
+Verify with a login shell (`bash -lc`), which reads `~/.bash_profile` regardless of
+how the user's `~/.bashrc` is guarded:
 
 ```bash
 ssh perlmutter bash -lc 'uv cache dir'
