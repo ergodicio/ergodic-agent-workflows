@@ -16,6 +16,7 @@ These wrappers live at `~/.ergodic-claude/ops/` (symlinked by `bootstrap-local.s
 
 | Need | Script |
 | --- | --- |
+| Isolated interactive edit–run–debug lease | `~/.ergodic-claude/ops/session.sh start|sync|exec|shell|status|stop` |
 | Sync cwd → `$PSCRATCH/<repo>/` | `~/.ergodic-claude/ops/sync-up.sh` |
 | Allocate interactive GPU (1 GPU) | `~/.ergodic-claude/ops/interactive-gpu.sh [hours] [nodes]` |
 | Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.ergodic-claude/ops/interactive-gpu-node.sh [hours] [nodes]` |
@@ -37,7 +38,11 @@ generating a command for the user, since they read back unambiguously in the tra
 (`interactive-shared.sh` took `[gpus] [hours]` until 2026-08-16 — if you see that order in an
 older note or script, it is stale.)
 
-Operations not covered by the scripts (venv mutation, custom launch, pulling artifacts back, multi-node launch) still go through inline `ssh perlmutter "…"` as shown below — those need the user to see the full command before approving.
+Operations not covered by the scripts (venv mutation, pulling artifacts back, unusual
+multi-node launch arrangements) still go through inline `ssh perlmutter "…"` as shown below
+— those need the user to see the full command before approving. For arbitrary calculations
+inside an interactive allocation, use `session.sh exec` rather than generating a new SSH
+launch command.
 
 **Anti-pattern:** chaining a script with a free-form ssh — `Bash(scripts/sync-up.sh && ssh perlmutter "<something unsafe>")` defeats the allowlist. Invoke scripts standalone, then issue any free-form command as a separate `Bash` call.
 
@@ -339,13 +344,74 @@ Stamps `.git_commit` (so the training script can log the SHA to MLflow) and rsyn
 
 > **Shared-dir hazard.** `sync-up.sh` rsyncs into a *single* per-repo dir (`$PSCRATCH/<repo>/`), and the venv's editable install points there. Switch branches locally and re-sync and the common files are **overwritten**; deleted local files can also remain remotely, yielding a hybrid tree. Either case can break a job still queued or running against the old tree. For anything that must survive concurrent branches or long queue waits (production batch jobs, multi-day runs), use **commit-pinned isolated runs** (`launch-pinned.sh`, below) instead.
 
+### Interactive development lease (preferred for edit–run–debug)
+
+Use `session.sh` when the user wants to try calculations, inspect failures, edit locally,
+and rerun without paying allocation startup latency each time. It owns one active session
+per local repo worktree:
+
+```bash
+~/.ergodic-claude/ops/session.sh start --kind shared --hours 2 --gpus 1
+~/.ergodic-claude/ops/session.sh exec -- python run.py --cfg example
+
+# after editing locally — a clean worktree is not required
+~/.ergodic-claude/ops/session.sh sync
+~/.ergodic-claude/ops/session.sh exec -- pytest tests/test_solver.py
+
+# a human or terminal-driven debugger can attach to the same allocation
+~/.ergodic-claude/ops/session.sh shell
+~/.ergodic-claude/ops/session.sh status
+~/.ergodic-claude/ops/session.sh stop
+```
+
+Kinds map to the existing interactive resource shapes:
+
+| Kind | Resource flags | Intended use |
+| --- | --- | --- |
+| `shared` (default) | `--gpus 1|2` | Fast sub-node GPU iteration |
+| `gpu` | `--nodes 1..4` | Whole GPU nodes |
+| `cpu` | `--nodes 1..4` | CPU-only calculations |
+
+All sessions are capped at four hours. Each gets an isolated root:
+
+```text
+$PSCRATCH/<repo>-sessions/<session-id>/
+├── src/       synchronized local worktree
+├── workdir/   source-state records and temporary run data
+└── outputs/   results that must survive later source syncs
+```
+
+The local worktree is the source of truth. `sync` accepts committed, modified, staged, and
+untracked source. It records the base SHA, dirty state, binary diff, untracked-file status,
+and a content fingerprint. It does **not** contact GitHub. To remove stale synchronized
+source, it may delete paths only under the session's disposable `src/`, and only after a
+repo/session marker matches. Standard run-output exclusions are protected even within
+`src/`; `workdir/`, `outputs/`, the legacy `$PSCRATCH/<repo>/`, and all other sessions are
+outside the sync target.
+
+`exec` preserves the user's command as an argument vector; use an explicit
+`bash -lc 'pipeline | ...'` only when shell syntax is needed. It sets `EC_SESSION_ROOT`,
+`EC_SESSION_WORKDIR`, and `EC_SESSION_OUTPUTS`, activates the project venv if it exists, and
+puts the session checkout ahead of the shared editable install on `PYTHONPATH`, then runs the
+command through `srun --jobid=<validated-session-job> --overlap` on the allocated compute
+resource. `shell` opens a PTY with the same environment.
+
+This is deliberately a broad, time-bounded development capability: arbitrary code running
+as the user's NERSC identity still has that identity's filesystem permissions. Do not
+describe it as a filesystem sandbox, and do not blanket-allow every ops script. The smaller
+blast radius comes from the unique workspace, exact job ID, resource cap, expiry, and the
+separate approval boundary for login-node or destructive operations.
+
+When a result matters beyond debugging, commit and push it, then launch the exact SHA with
+`launch-pinned.sh`. A clean worktree is a **promotion gate**, not an interactive-session gate.
+
 ## Choosing a run pattern
 
 Three patterns; pick deliberately.
 
 | Pattern | When to use | How |
 | --- | --- | --- |
-| **Persistent allocation + attach** (preferred for iterative dev) | Running a sim, looking at output, tweaking config, running again. Multiple commands in the same allocation. Live debugging. | `interactive-gpu.sh` → `ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"` → work on the compute node directly |
+| **Interactive development lease** (preferred for iterative dev) | Running a sim, looking at output, tweaking code/config, and running again, including a dirty worktree. | `session.sh start` → repeated `sync` / `exec` / `shell` → `stop` |
 | **One-shot fire-and-forget** | Automated launches Claude is going to monitor by tailing a log. Allocation lifetime = command lifetime. | `ssh perlmutter "nohup setsid salloc … srun bash -c '…' > \$PSCRATCH/<repo>/workdir/….log &"` — see "Run on compute node" below |
 | **Commit-pinned isolated run** (preferred for production / long-queue batch) | A run that must be reproducible and immune to later branch switches — production sweeps, multi-hour/day batch jobs, anything you'll queue then walk away from. | `launch-pinned.sh` — see below |
 
@@ -416,7 +482,11 @@ production without it, and it did not reproduce in the 2026-08-11 test. Treat it
 to recognize, not a reason to avoid the config: if blocks die at launch with a missing or
 truncated cmd script, this is what you're looking at.
 
-### Attach to a persistent interactive allocation (preferred for dev iteration)
+### Attach to a persistent interactive allocation manually (low-level fallback)
+
+Prefer `session.sh` for the normal agent-driven development loop. Use the commands below
+when attaching to an allocation that predates the session helper or when a human explicitly
+wants to manage the allocation and remote working directory by hand.
 
 After allocating with `~/.ergodic-claude/ops/interactive-gpu.sh <hrs>` (which uses `salloc --no-shell` and prints `<JOBID>`):
 
@@ -748,15 +818,28 @@ that case:
 
 ## Iteration workflow
 
-The typical loop is: edit locally → sync → ensure venv → cancel old job → run → monitor → pull results → repeat.
+For interactive development, the typical loop is: ensure venv → `session start` → edit
+locally → `session sync` → `session exec` → inspect → repeat → `session stop`. Reuse the
+allocation instead of cancelling and reallocating for every code change.
 
-The venv step is fast after the first time. Don't skip it just because "it probably exists" — the user may have switched projects, changed Python deps, or never run this repo on NERSC before.
+For production, use: clean worktree → commit → push → `launch-pinned.sh` → monitor → pull
+results. Do not require a clean worktree merely to debug interactively.
+
+The venv step is fast after the first time. Don't skip it just because "it probably exists"
+— the user may have switched projects, changed Python deps, or never run this repo on NERSC
+before.
 
 ## Guidelines
 
-- The canonical order for a launch is: **sync → ensure venv → launch**. Never launch without checking the venv exists — undergrads and new joiners will not have run any setup manually.
-- When the user says "run on NERSC" or "launch training", do all three in order.
-- When iterating, cancel the old job first, then sync → ensure venv → relaunch. The venv check is cheap on the iteration path (just a pyproject hash check + no-op).
+- The canonical order for a new interactive lease is: **ensure venv → session start**.
+  `start` performs the initial source sync. Never launch without checking the venv exists —
+  undergrads and new joiners will not have run any setup manually.
+- When the user asks to experiment, debug, fix a calculation, or iterate on an interactive
+  node, prefer `session.sh`. Dirty worktrees are allowed and expected in this mode.
+- During a lease, edit locally and call `session sync` before rerunning. Reuse the existing
+  allocation until the user asks to stop it or the walltime expires.
+- When the user asks for a production, reproducible, long-queue, or unattended run, require
+  a clean pushed commit and use `launch-pinned.sh`.
 - For monitoring, check the run log on `workdir/` first (`read-log.sh` — fastest). Fall back to `squeue` if the log is stale.
 - The `mlflow-query` skill is the right tool for checking metrics — use it alongside this one.
 - The `adept-run` skill is the right tool for deciding *what command to run* (ergoExo vs. parsl scan vs. direct module). This skill handles only the NERSC infra.
