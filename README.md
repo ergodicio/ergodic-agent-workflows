@@ -1,8 +1,8 @@
 # ergodic-claude
 
-The Ergodic flavor of [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) — a small set of skills, scripts, and an example that wires Claude Code up to the team's NERSC (Perlmutter) compute and MLflow tracking server.
+The Ergodic workflow for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) and [Codex](https://developers.openai.com/codex/) — a small set of shared skills, scripts, and an example that wires either coding agent up to the team's NERSC (Perlmutter) compute and MLflow tracking server.
 
-After installing this once, you can run Claude Code from any project repo on your laptop and ask things like:
+After installing this once, you can run Claude Code or Codex from any project repo on your laptop and ask things like:
 
 > sync and launch this on NERSC
 
@@ -21,12 +21,13 @@ After installing this once, you can run Claude Code from any project repo on you
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
-| `scripts/ops/` | Thin wrappers around safe `ssh perlmutter "…"` invocations (squeue, sacct, scancel, interactive-gpu, sync-up, log read/grep, mlflow get-params/list/download-artifact, show-config, list-accounts). Bootstrap symlinks these to `~/.claude/scripts/ergodic/` so they have a stable path and can be allowlisted in one rule |
+| `scripts/ops/` | Thin wrappers around safe `ssh perlmutter "…"` invocations (squeue, sacct, scancel, interactive-gpu, sync-up, log read/grep, mlflow get-params/list/download-artifact, show-config, list-accounts). Bootstrap symlinks these to `~/.ergodic-claude/ops/`, an agent-neutral stable path |
 | `rules/nersc-agent-rules.md` | NERSC's [required coding-agent rules](https://docs.nersc.gov/development/coding-agents/) — bounded filesystem search, secrets handling, agent conduct on shared systems |
-| `scripts/install-agent-rules.sh` | Installs that block into `~/.claude/CLAUDE.md` between managed markers (idempotent; backs up first) |
+| `scripts/install-agent-rules.sh` | Installs that block into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, or both between managed markers (idempotent; backs up first) |
 | `~/.config/ergodic-claude/config.sh` | **Your** settings — which NERSC project to bill. Written by `bootstrap-nersc.sh`, outside the repo. `scripts/ops/show-config.sh` prints what resolved; `list-accounts.sh` lists the projects you can charge |
-| `scripts/bootstrap-local.sh` | Installs `uv`, links the skills into `~/.claude/skills/`, links ops scripts into `~/.claude/scripts/ergodic/`, installs the NERSC agent rules, checks ssh |
-| `scripts/bootstrap-nersc.sh` | Installs `uv` on Perlmutter, creates the venv and scratch directories the skill expects, installs the NERSC agent rules there too |
+| `scripts/bootstrap-local.sh` | Installs `uv`, links shared skills for the selected agent(s), links ops scripts into `~/.ergodic-claude/ops/`, installs the NERSC agent rules, checks ssh |
+| `scripts/bootstrap-nersc.sh` | Installs `uv` on Perlmutter, creates the venv and scratch directories the skill expects, and installs rules for the selected agent(s) there too |
+| `scripts/uninstall.sh` | Removes the selected agent's bootstrap-managed local links and rules; `--nersc` also removes its managed rules on Perlmutter |
 | `examples/first-run/` | A ~30-second torch training job that exercises the entire loop |
 
 ---
@@ -38,7 +39,7 @@ You need three things before installing:
 1. **A NERSC account on a project with a Perlmutter allocation** (the team's is `m4490`). If you don't have one, talk to your project PI to be added. Then enroll in MFA.
 2. **`sshproxy` set up locally** so you can `ssh perlmutter` without typing OTP every time. Follow the [NERSC sshproxy docs](https://docs.nersc.gov/connect/mfa/#sshproxy). At the end you should have a `perlmutter` Host alias in `~/.ssh/config`. Test with `ssh perlmutter true`.
 3. **MLflow credentials** for `https://continuum.ergodic.io/experiments/`. Ask in the team Slack if you don't have a token yet.
-4. **Claude Code installed.** See https://docs.claude.com/en/docs/claude-code/setup.
+4. **Claude Code or Codex installed.** Claude Code setup: https://docs.claude.com/en/docs/claude-code/setup. Codex is available in the Codex app and CLI.
 
 ---
 
@@ -47,9 +48,32 @@ You need three things before installing:
 ```bash
 git clone https://github.com/ergodicio/ergodic-claude.git
 cd ergodic-claude
-./scripts/bootstrap-local.sh    # uv + skills + NERSC agent rules + ssh check
-./scripts/bootstrap-nersc.sh    # uv + dirs + NERSC agent rules on Perlmutter
+agent=codex  # claude, codex, or both
+./scripts/bootstrap-local.sh --agent "$agent"
+./scripts/bootstrap-nersc.sh --agent "$agent"
 ```
+
+Use `--agent claude`, `--agent codex`, or `--agent both` with both scripts. The default is
+`both`, so existing no-argument installs keep working. A single-agent install only creates
+that agent's skill, compatibility, and rules files; it does not delete files left by an
+earlier install for the other agent.
+
+### Uninstall
+
+Remove only Claude Code's bootstrap-managed links and local rules with:
+
+```bash
+./scripts/uninstall.sh --agent claude
+```
+
+Add `--nersc` to also remove the managed Claude rules block from Perlmutter. Use
+`--agent codex` or `--agent both` for the other selections; the default is `both`, as with
+the bootstrap scripts.
+
+The uninstaller only removes symlinks whose targets exactly match the checkout it is run
+from and rules inside the managed markers. It leaves user-owned files, unexpected symlinks,
+and backups untouched. The shared `~/.ergodic-claude/ops` link stays in place while another
+installed agent still uses it.
 
 `bootstrap-nersc.sh` will have created `~/.mlflow_credentials` on Perlmutter with placeholder values. Fill it in:
 
@@ -68,13 +92,7 @@ export MLFLOW_TRACKING_USERNAME=<your-username>
 export MLFLOW_TRACKING_PASSWORD=<your-token>
 ```
 
-For fewer permission prompts, add this to your Claude Code settings allowlist so the ops scripts are pre-approved:
-
-```
-Bash(~/.claude/scripts/ergodic/*)
-```
-
-The scripts are intentionally narrow wrappers — each one runs a single known-safe ssh command, so blanket-allowing them is safe. Free-form `ssh perlmutter "…"` calls (used in the skills for venv mutation, custom launches, etc.) still go through normal per-command approval.
+The scripts are intentionally narrow wrappers — each one runs a single known-safe ssh command. Claude Code users can allowlist `Bash(~/.ergodic-claude/ops/*)` in their settings. Codex users should approve these scoped scripts when prompted; free-form `ssh perlmutter "…"` calls (used for venv mutation and custom launches) remain separate approval decisions.
 
 Open a new shell to pick those up, then prove it all works with the demo:
 
@@ -87,11 +105,11 @@ cd examples/first-run
 
 ## How the skills work together
 
-When you ask Claude something like "launch training on NERSC", Claude reads `nersc-workflow/SKILL.md`, derives paths from `$(basename $PWD)`, and runs the right rsync + salloc + srun for you. Output is teed to `/tmp/nersc_<repo>.log` and the ssh is backgrounded so you can keep working.
+When you ask either agent something like "launch training on NERSC", it reads `nersc-workflow/SKILL.md`, derives paths from `$(basename $PWD)`, and runs the right rsync + salloc + srun for you. Output is teed to `/tmp/nersc_<repo>.log` and the ssh is backgrounded so you can keep working.
 
-When you ask "how's the run going", Claude reads `mlflow-query/SKILL.md`, uses `uv run python3` to hit the tracking server, and summarizes recent runs + loss history.
+When you ask "how's the run going", the agent reads `mlflow-query/SKILL.md`, uses `uv run python3` to hit the tracking server, and summarizes recent runs + loss history.
 
-The two skills don't know about each other directly — Claude composes them.
+The two skills don't know about each other directly — the agent composes them.
 
 ---
 
@@ -101,8 +119,8 @@ NERSC publishes [guidance for coding agents on their systems](https://docs.nersc
 and asks that one part of it — the filesystem-discovery rules — live in your agent's config
 file rather than in a skill, so it applies even when no skill is loaded. The bootstrap
 scripts do that for you: `scripts/install-agent-rules.sh` copies the block from
-`rules/nersc-agent-rules.md` into `~/.claude/CLAUDE.md`, on your laptop **and** on
-Perlmutter, delimited by markers:
+`rules/nersc-agent-rules.md` into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, or both
+according to `--agent`, on your laptop **and** on Perlmutter, delimited by markers:
 
 ```
 <!-- >>> ergodic-claude nersc-agent-rules >>> -->
@@ -111,10 +129,11 @@ Perlmutter, delimited by markers:
 ```
 
 Nothing outside those markers is touched, the file is backed up to `CLAUDE.md.bak` before
-any change, and re-running refreshes the block in place. To remove the rules, delete the
-marked block. To install by hand somewhere else:
+any change, and re-running refreshes the block in place. To remove the managed block or
+install it somewhere else:
 
 ```bash
+./scripts/install-agent-rules.sh --remove --agent claude
 ./scripts/install-agent-rules.sh --target ~/.codex/AGENTS.md
 ```
 
@@ -204,5 +223,5 @@ If your project has different conventions (multi-node, non-interactive QOS, diff
 ```bash
 cd path/to/ergodic-claude
 git pull
-./scripts/bootstrap-local.sh    # safe to re-run, just refreshes the symlinks
+./scripts/bootstrap-local.sh --agent codex    # safe to re-run; use your original selection
 ```

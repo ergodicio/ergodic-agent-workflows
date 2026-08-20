@@ -5,11 +5,10 @@
 # Stamps the current git commit SHA to .git_commit first so training scripts
 # can log it to MLflow (since .git/ is excluded from the rsync).
 # Excludes match the nersc-workflow skill: __pycache__, .git, .venv,
-# checkpoints, runinfo, workdir, plots, *.ipynb_checkpoints, uv.lock,
-# mlruns/, mlflow.db.
-# workdir/ holds run outputs + detached-launch logs on scratch (see
-# kinetic-srs CLAUDE.md) — without the exclude, --delete wipes it on every
-# sync (it deleted remote launch logs on 2026-06-11).
+# checkpoints, runinfo, workdir, plots, mlruns, mlflow.db,
+# *.ipynb_checkpoints, and uv.lock.
+# workdir/ holds run outputs + detached-launch logs on scratch. Keep it out of
+# the upload so local source syncs never overwrite remote run artifacts.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=config.sh
@@ -36,7 +35,7 @@ if [ -z "$REMOTE_SCRATCH" ]; then
     exit 1
 fi
 
-rsync -avz --delete \
+rsync -avz \
     --exclude='__pycache__' \
     --exclude='.git/' \
     --exclude='.venv/' \

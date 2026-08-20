@@ -17,8 +17,8 @@
 #      "return unless interactive" guard those files commonly start with
 #      (Perlmutter does not source the Cori-era ~/.bash_profile.ext / ~/.zshrc.ext files)
 #   5. Creates ~/.mlflow_credentials (mode 600) with placeholders, if missing
-#   6. Installs NERSC's required agent rules into ~/.claude/CLAUDE.md *on Perlmutter*, so an
-#      agent started on a login node gets the same filesystem-traversal rules
+#   6. Installs NERSC's required agent rules into the selected agent's guidance *on
+#      Perlmutter*, so that agent gets the same rules when started on a login node
 #
 # Run from your laptop. Requires that `ssh perlmutter` works (sshproxy set up).
 #
@@ -34,6 +34,37 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 say() { printf "\n\033[1;36m[ergodic-claude]\033[0m %s\n" "$*"; }
 die() { printf "\n\033[1;31m[ergodic-claude]\033[0m %s\n" "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/bootstrap-nersc.sh [--agent claude|codex|both]
+
+Set up Perlmutter for Claude Code, Codex, or both. The default is both.
+EOF
+}
+
+AGENT="both"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent)
+      [ $# -ge 2 ] || die "--agent needs claude, codex, or both"
+      AGENT="$2"
+      shift 2
+      ;;
+    --agent=*) AGENT="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$AGENT" in
+  claude) AGENT_LABEL="Claude Code" ;;
+  codex)  AGENT_LABEL="Codex" ;;
+  both)   AGENT_LABEL="Claude Code and Codex" ;;
+  *) die "unknown agent: ${AGENT} (expected claude, codex, or both)" ;;
+esac
+
+say "Setting up agent selection: ${AGENT}"
 
 ssh -o ConnectTimeout=10 perlmutter true 2>/dev/null \
   || die "Can't ssh to perlmutter. Run sshproxy first (or fix your ~/.ssh/config alias)."
@@ -80,7 +111,7 @@ Re-run interactively, or pick one now:
   {
     printf '# ergodic-claude user config — written by bootstrap-nersc.sh, safe to edit.\n'
     printf '# `: "${VAR:=value}"` form means an exported EC_* in your shell still wins.\n'
-    printf '# Your projects: ~/.claude/scripts/ergodic/list-accounts.sh\n'
+    printf '# Your projects: ~/.ergodic-claude/ops/list-accounts.sh\n'
     printf ': "${EC_ACCOUNT:=%s}"\n' "$EC_ACCOUNT"
   } > "$EC_CONFIG"
   say "Wrote ${EC_CONFIG} (EC_ACCOUNT=${EC_ACCOUNT})"
@@ -241,7 +272,7 @@ echo "  env file:         ${ENV_FILE}                $([ -f "${ENV_FILE}" ] && e
 REMOTE
 
 # 6. NERSC's agent rules, on the Perlmutter side too. Someone running an agent from a login
-#    node needs the filesystem-traversal rules there, in that machine's ~/.claude/CLAUDE.md.
+#    node needs the filesystem-traversal rules in that machine's agent guidance.
 #    Ship the installer + rules over rather than re-implementing the merge remotely: the
 #    rules text is full of `$VARS` and backticks that would not survive a heredoc.
 #    Stage under $HOME, not /tmp: `ssh perlmutter` round-robins across login nodes and /tmp
@@ -252,11 +283,11 @@ REMOTE_TMP="$(ssh perlmutter 'mktemp -d "${HOME}/.ec-install-XXXXXX"')"
 scp -q "${REPO_ROOT}/scripts/install-agent-rules.sh" "${REPO_ROOT}/rules/nersc-agent-rules.md" \
         "perlmutter:${REMOTE_TMP}/" \
   || die "couldn't copy the agent rules to Perlmutter (staging dir ${REMOTE_TMP})"
-ssh perlmutter "bash '${REMOTE_TMP}/install-agent-rules.sh' --rules '${REMOTE_TMP}/nersc-agent-rules.md'; rm -rf '${REMOTE_TMP}'"
+ssh perlmutter "bash '${REMOTE_TMP}/install-agent-rules.sh' --rules '${REMOTE_TMP}/nersc-agent-rules.md' --agent '${AGENT}'; rm -rf '${REMOTE_TMP}'"
 
 say "Perlmutter bootstrap done."
 say "Next steps:"
 say "  1. ssh perlmutter, then \`vim ~/.mlflow_credentials\` and fill in your username/token."
 say "  2. Open a fresh shell on Perlmutter to pick up the new env (or \`source ~/.bash_profile\`)."
-say "  3. From inside a project repo on your laptop, ask Claude to 'sync and launch on NERSC'."
+say "  3. From inside a project repo on your laptop, ask ${AGENT_LABEL} to 'sync and launch on NERSC'."
 say "  4. See examples/first-run/ for an end-to-end demo."

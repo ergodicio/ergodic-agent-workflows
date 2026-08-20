@@ -3,9 +3,9 @@
 #
 # What this does:
 #   1. Installs uv if it's missing (per-user, no sudo)
-#   2. Symlinks the skills into ~/.claude/skills/ so Claude Code picks them up globally
-#   3. Symlinks the ops scripts into ~/.claude/scripts/ergodic/ (one allowlist rule covers all)
-#   4. Installs NERSC's required agent rules into ~/.claude/CLAUDE.md (marker-delimited)
+#   2. Symlinks the skills into the selected agent's global skill directory
+#   3. Symlinks the ops scripts into ~/.ergodic-claude/ops/ (agent-neutral stable path)
+#   4. Installs NERSC's required agent rules into the selected agent's guidance file
 #   5. Verifies you can ssh to perlmutter
 #   6. Prints what to do next
 #
@@ -15,11 +15,52 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLAUDE_SKILLS_DIR="${HOME}/.claude/skills"
-CLAUDE_SCRIPTS_DIR="${HOME}/.claude/scripts"
+CODEX_SKILLS_DIR="${HOME}/.codex/skills"
+OPS_DIR="${HOME}/.ergodic-claude/ops"
 
 say() { printf "\n\033[1;36m[ergodic-claude]\033[0m %s\n" "$*"; }
 warn() { printf "\n\033[1;33m[ergodic-claude]\033[0m %s\n" "$*"; }
 die() { printf "\n\033[1;31m[ergodic-claude]\033[0m %s\n" "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/bootstrap-local.sh [--agent claude|codex|both]
+
+Set up Claude Code, Codex, or both on this machine. The default is both.
+EOF
+}
+
+AGENT="both"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --agent)
+      [ $# -ge 2 ] || die "--agent needs claude, codex, or both"
+      AGENT="$2"
+      shift 2
+      ;;
+    --agent=*) AGENT="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$AGENT" in
+  claude)
+    SKILLS_DIRS=("${CLAUDE_SKILLS_DIR}")
+    OPS_COMPAT_DIRS=("${HOME}/.claude/scripts/ergodic")
+    ;;
+  codex)
+    SKILLS_DIRS=("${CODEX_SKILLS_DIR}")
+    OPS_COMPAT_DIRS=("${HOME}/.codex/scripts/ergodic")
+    ;;
+  both)
+    SKILLS_DIRS=("${CLAUDE_SKILLS_DIR}" "${CODEX_SKILLS_DIR}")
+    OPS_COMPAT_DIRS=("${HOME}/.claude/scripts/ergodic" "${HOME}/.codex/scripts/ergodic")
+    ;;
+  *) die "unknown agent: ${AGENT} (expected claude, codex, or both)" ;;
+esac
+
+say "Setting up agent selection: ${AGENT}"
 
 # 1. uv
 if ! command -v uv >/dev/null 2>&1; then
@@ -31,38 +72,51 @@ else
   say "uv already installed ($(uv --version))"
 fi
 
-# 2. Skills
-mkdir -p "${CLAUDE_SKILLS_DIR}"
-for skill in nersc-workflow mlflow-query adept-run; do
-  src="${REPO_ROOT}/skills/${skill}"
-  dst="${CLAUDE_SKILLS_DIR}/${skill}"
-  if [[ -e "${dst}" && ! -L "${dst}" ]]; then
-    warn "${dst} exists and is not a symlink — backing up to ${dst}.bak"
-    mv "${dst}" "${dst}.bak"
-  fi
-  rm -f "${dst}"
-  ln -s "${src}" "${dst}"
-  say "Linked skill: ${dst} -> ${src}"
+# 2. Skills — the same SKILL.md files work with both agents.
+for skills_dir in "${SKILLS_DIRS[@]}"; do
+  mkdir -p "${skills_dir}"
+  for skill in nersc-workflow mlflow-query adept-run; do
+    src="${REPO_ROOT}/skills/${skill}"
+    dst="${skills_dir}/${skill}"
+    if [[ -e "${dst}" && ! -L "${dst}" ]]; then
+      warn "${dst} exists and is not a symlink — backing up to ${dst}.bak"
+      mv "${dst}" "${dst}.bak"
+    fi
+    rm -f "${dst}"
+    ln -s "${src}" "${dst}"
+    say "Linked skill: ${dst} -> ${src}"
+  done
 done
 
-# 3. Ops scripts — symlink scripts/ops/ to ~/.claude/scripts/ergodic/ so skills
-#    can reference helpers at a stable absolute path. Allowlist target:
-#    Bash(~/.claude/scripts/ergodic/*)
-mkdir -p "${CLAUDE_SCRIPTS_DIR}"
-ops_dst="${CLAUDE_SCRIPTS_DIR}/ergodic"
-if [[ -e "${ops_dst}" && ! -L "${ops_dst}" ]]; then
-  warn "${ops_dst} exists and is not a symlink — backing up to ${ops_dst}.bak"
-  mv "${ops_dst}" "${ops_dst}.bak"
+# 3. Ops scripts — use one stable, agent-neutral path. This avoids embedding a
+#    Claude-specific path in skills that Codex also loads.
+mkdir -p "$(dirname "${OPS_DIR}")"
+if [[ -e "${OPS_DIR}" && ! -L "${OPS_DIR}" ]]; then
+  warn "${OPS_DIR} exists and is not a symlink — backing up to ${OPS_DIR}.bak"
+  mv "${OPS_DIR}" "${OPS_DIR}.bak"
 fi
-rm -f "${ops_dst}"
-ln -s "${REPO_ROOT}/scripts/ops" "${ops_dst}"
-say "Linked ops scripts: ${ops_dst} -> ${REPO_ROOT}/scripts/ops"
-say "  → Allow them in one rule: add 'Bash(~/.claude/scripts/ergodic/*)' to your settings."
+rm -f "${OPS_DIR}"
+ln -s "${REPO_ROOT}/scripts/ops" "${OPS_DIR}"
+say "Linked ops scripts: ${OPS_DIR} -> ${REPO_ROOT}/scripts/ops"
+
+# Keep the former Claude path and an equivalent Codex path as compatibility
+# links. Existing prompts and older skill copies can continue to invoke them,
+# while new instructions use the neutral path above.
+for ops_compat_dir in "${OPS_COMPAT_DIRS[@]}"; do
+  mkdir -p "$(dirname "${ops_compat_dir}")"
+  if [[ -e "${ops_compat_dir}" && ! -L "${ops_compat_dir}" ]]; then
+    warn "${ops_compat_dir} exists and is not a symlink — leaving it untouched"
+    continue
+  fi
+  rm -f "${ops_compat_dir}"
+  ln -s "${OPS_DIR}" "${ops_compat_dir}"
+  say "Linked compatibility path: ${ops_compat_dir} -> ${OPS_DIR}"
+done
 
 # 4. Agent rules — NERSC requires the filesystem-traversal rules to live in the agent's
 #    config file, not just in a skill (they must bind even when no skill is loaded).
 #    https://docs.nersc.gov/development/coding-agents/
-"${REPO_ROOT}/scripts/install-agent-rules.sh"
+"${REPO_ROOT}/scripts/install-agent-rules.sh" --agent "${AGENT}"
 
 # 5. SSH check — fatal. The ops scripts and the nersc-workflow skill assume
 #    `ssh perlmutter true` works non-interactively. There's no useful state
@@ -96,4 +150,4 @@ cat <<'EOF'
   export MLFLOW_TRACKING_PASSWORD=<your-token>
 EOF
 
-say "Local bootstrap done. Next: run scripts/bootstrap-nersc.sh to set up Perlmutter."
+say "Local bootstrap done. Next: run scripts/bootstrap-nersc.sh --agent ${AGENT} to set up Perlmutter."

@@ -3,7 +3,7 @@
 #
 # Copy this into a campaign next to its scan.py (e.g. sims/<campaign>/run-scan.sbatch),
 # set DRIVER below, then submit from your repo root with:
-#     ~/.claude/scripts/ergodic/submit-batch.sh sims/<campaign>/run-scan.sbatch
+#     ~/.ergodic-claude/ops/submit-batch.sh sims/<campaign>/run-scan.sbatch
 # (submit-batch.sh runs `cd $PSCRATCH/<repo> && mkdir -p workdir && sbatch <this>`.)
 #
 # This is the ALTERNATIVE to detaching the multi-node one-shot, not the default: for
@@ -40,13 +40,13 @@
 # (no --account here either: submit-batch.sh passes `-A $EC_ACCOUNT_GPU` from your
 #  ergodic-claude config, which overrides any #SBATCH --account. If you sbatch this
 #  directly you get your SLURM default account — check it with
-#  `~/.claude/scripts/ergodic/show-config.sh EC_ACCOUNT_GPU` and pass -A yourself.)
+#  `~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU` and pass -A yourself.)
 #SBATCH --qos=regular              # interactive QOS rejects sbatch (tested 2026-07-03); regular also lifts the 4 h cap
 #SBATCH --constraint=gpu
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4            # REQUIRED — without it the parsl srun step gets CUDA_ERROR_NO_DEVICE
 #SBATCH --time=04:00:00
-#SBATCH --output=workdir/%x-%j.out   # workdir/ is excluded from sync --delete, so logs persist
+#SBATCH --output=workdir/%x-%j.out   # workdir/ is excluded from source sync, so logs persist
 
 set -e   # not -u: sourcing ~/.bash_profile.ext / ergodic-claude.sh may reference unset vars
 
