@@ -27,6 +27,7 @@ After installing this once, you can run Claude Code or Codex from any project re
 | `~/.config/ergodic-claude/config.sh` | **Your** settings — which NERSC project to bill. Written by `bootstrap-nersc.sh`, outside the repo. `scripts/ops/show-config.sh` prints what resolved; `list-accounts.sh` lists the projects you can charge |
 | `scripts/bootstrap-local.sh` | Installs `uv`, links shared skills for the selected agent(s), links ops scripts into `~/.ergodic-claude/ops/`, installs the NERSC agent rules, checks ssh |
 | `scripts/bootstrap-nersc.sh` | Installs `uv` on Perlmutter, creates the venv and scratch directories the skill expects, and installs rules for the selected agent(s) there too |
+| `scripts/uninstall.sh` | Removes the selected agent's bootstrap-managed local links and rules; `--nersc` also removes its managed rules on Perlmutter |
 | `examples/first-run/` | A ~30-second torch training job that exercises the entire loop |
 
 ---
@@ -56,6 +57,23 @@ Use `--agent claude`, `--agent codex`, or `--agent both` with both scripts. The 
 `both`, so existing no-argument installs keep working. A single-agent install only creates
 that agent's skill, compatibility, and rules files; it does not delete files left by an
 earlier install for the other agent.
+
+### Uninstall
+
+Remove only Claude Code's bootstrap-managed links and local rules with:
+
+```bash
+./scripts/uninstall.sh --agent claude
+```
+
+Add `--nersc` to also remove the managed Claude rules block from Perlmutter. Use
+`--agent codex` or `--agent both` for the other selections; the default is `both`, as with
+the bootstrap scripts.
+
+The uninstaller only removes symlinks whose targets exactly match the checkout it is run
+from and rules inside the managed markers. It leaves user-owned files, unexpected symlinks,
+and backups untouched. The shared `~/.ergodic-claude/ops` link stays in place while another
+installed agent still uses it.
 
 `bootstrap-nersc.sh` will have created `~/.mlflow_credentials` on Perlmutter with placeholder values. Fill it in:
 
@@ -111,10 +129,11 @@ according to `--agent`, on your laptop **and** on Perlmutter, delimited by marke
 ```
 
 Nothing outside those markers is touched, the file is backed up to `CLAUDE.md.bak` before
-any change, and re-running refreshes the block in place. To remove the rules, delete the
-marked block. To install by hand somewhere else:
+any change, and re-running refreshes the block in place. To remove the managed block or
+install it somewhere else:
 
 ```bash
+./scripts/install-agent-rules.sh --remove --agent claude
 ./scripts/install-agent-rules.sh --target ~/.codex/AGENTS.md
 ```
 

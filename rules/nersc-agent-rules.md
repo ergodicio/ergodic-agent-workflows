@@ -7,6 +7,7 @@ rules below into their agent config (`~/.claude/CLAUDE.md` or `~/.codex/AGENTS.m
 `scripts/install-agent-rules.sh` installs this block into `~/.claude/CLAUDE.md`,
 `~/.codex/AGENTS.md`, or both between managed markers, on your laptop and on Perlmutter.
 Re-running it refreshes the block in place; nothing else in the selected files is touched.
+Pass `--remove --agent claude|codex|both` to remove the selected managed block.
 
 The one deviation from NERSC's text: their example routes heavy searches through a
 `$perlmutter-compute` subagent, which we don't have. Ours routes them through an
