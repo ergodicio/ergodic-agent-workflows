@@ -14,6 +14,7 @@
 #   ./scripts/install-agent-rules.sh --agent claude        # install into ~/.claude/CLAUDE.md
 #   ./scripts/install-agent-rules.sh --target path/to.md   # somewhere else
 #   ./scripts/install-agent-rules.sh --rules path/to.md    # alternate source (used remotely)
+#   ./scripts/install-agent-rules.sh --remove --agent codex # remove the managed block
 #   ./scripts/install-agent-rules.sh --print               # print the block, install nothing
 #
 # Run on your laptop by bootstrap-local.sh, and on Perlmutter by bootstrap-nersc.sh (which
@@ -27,6 +28,7 @@ RULES="${REPO_ROOT}/rules/nersc-agent-rules.md"
 TARGET=""
 AGENT="both"
 PRINT_ONLY=0
+REMOVE=0
 
 MARKER="<!-- >>> ergodic-claude nersc-agent-rules >>> -->"
 END_MARKER="<!-- <<< ergodic-claude nersc-agent-rules <<< -->"
@@ -44,6 +46,7 @@ while [ $# -gt 0 ]; do
       case "$AGENT" in claude|codex|both) ;; *) die "unknown agent: $AGENT" ;; esac
       shift 2
       ;;
+    --remove) REMOVE=1; shift ;;
     --print)  PRINT_ONLY=1; shift ;;
     -h|--help)
       sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -52,7 +55,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -f "$RULES" ] || die "rules file not found: $RULES"
+[ "$REMOVE" -eq 1 ] || [ -f "$RULES" ] || die "rules file not found: $RULES"
+[ "$REMOVE" -eq 0 ] || [ "$PRINT_ONLY" -eq 0 ] || die "--remove and --print cannot be used together"
 
 if [ -n "$TARGET" ]; then
   TARGETS=("$TARGET")
@@ -66,6 +70,33 @@ fi
 
 TMPDIR_EC="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_EC"' EXIT
+
+if [ "$REMOVE" -eq 1 ]; then
+  for TARGET in "${TARGETS[@]}"; do
+    if [ ! -f "$TARGET" ]; then
+      say "No agent guidance file to clean at ${TARGET}"
+      continue
+    fi
+
+    if ! grep -qF "$MARKER" "$TARGET"; then
+      say "No managed NERSC agent rules in ${TARGET}"
+      continue
+    fi
+    grep -qF "$END_MARKER" "$TARGET" \
+      || die "$TARGET has the opening marker but not the closing one. Fix it by hand (restore or delete the block), then re-run."
+
+    cp "$TARGET" "${TARGET}.bak"
+    awk -v m="$MARKER" -v e="$END_MARKER" '
+      index($0,m) {in_block=1; next}
+      index($0,e) && in_block {in_block=0; next}
+      !in_block {print}
+    ' "$TARGET" > "${TMPDIR_EC}/without-managed-block.md"
+    mv "${TMPDIR_EC}/without-managed-block.md" "$TARGET"
+    say "Removed managed NERSC agent rules from ${TARGET} (previous copy: ${TARGET}.bak)"
+  done
+  exit 0
+fi
+
 BLOCK="${TMPDIR_EC}/block.md"
 
 # Everything between the BLOCK START / BLOCK END comments in the rules file is what gets

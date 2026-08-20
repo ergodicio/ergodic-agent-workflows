@@ -12,7 +12,7 @@ Manage the full cycle of syncing, running, monitoring, and iterating on Perlmutt
 
 These wrappers live at `~/.ergodic-claude/ops/` (symlinked by `bootstrap-local.sh`). They each wrap one known-safe `ssh perlmutter` invocation. **Always prefer the script over an inline `ssh perlmutter "…"` for these ops** — it makes the reviewed operation explicit and gives each agent a clear approval boundary.
 
-`~/.ergodic-claude/ops/` is the canonical spelling and the one to use when writing a command. `bootstrap-local.sh` also leaves `~/.claude/scripts/ergodic/` and `~/.codex/scripts/ergodic/` pointing at it, so older transcripts and prompts keep working — but those are Claude- and Codex-specific, and this skill is loaded by both. Don't reintroduce them.
+`~/.ergodic-claude/ops/` is the canonical spelling and the one to use when writing a command. `bootstrap-local.sh` also leaves the selected agent's compatibility path (`~/.claude/scripts/ergodic/`, `~/.codex/scripts/ergodic/`, or both) pointing at it, so older transcripts and prompts keep working — but those paths are agent-specific. Don't reintroduce them in shared instructions.
 
 | Need | Script |
 | --- | --- |
@@ -123,8 +123,8 @@ When a command wraps the body in `salloc … srun …` (the one-shot launches) o
 NERSC's [coding-agent guidance](https://docs.nersc.gov/development/coding-agents/) governs
 anything an agent does on their systems, including through `ssh perlmutter "…"` from a
 laptop. The full text ships in this repo at `rules/nersc-agent-rules.md` and is installed
-into both `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (on laptop and Perlmutter) by the
-bootstrap scripts, so it binds whether or not this skill is loaded. The parts that bite
+into the selected agent guidance file(s) (on laptop and Perlmutter) by the bootstrap
+scripts, so it binds whether or not this skill is loaded. The parts that bite
 hardest here:
 
 **Never recursively traverse a shared filesystem** — `/`, `/global`, `/global/cfs`,
@@ -712,15 +712,16 @@ executing. Ask for the smallest useful next step, run it, look at the result, th
 
 ## Running the agent on Perlmutter itself
 
-This skill assumes the normal setup: Claude runs on the laptop, work happens on Perlmutter
+This skill assumes the normal setup: the coding agent runs on the laptop, work happens on Perlmutter
 over ssh. If instead an agent is started *on* Perlmutter (a login node), NERSC's rules for
 that case:
 
 - Start it from `$HOME` or `$SCRATCH`, never from `/global/cfs` or a shared project root,
   and keep it in workspace-write mode — reading widely is fine, writing is not.
-- `bootstrap-nersc.sh` installs the same `rules/nersc-agent-rules.md` block into
-  `~/.claude/CLAUDE.md` on Perlmutter. If it's missing there, run
-  `scripts/install-agent-rules.sh` before working.
+- `bootstrap-nersc.sh` installs the same `rules/nersc-agent-rules.md` block into the
+  selected agent guidance file(s) on Perlmutter. If it is missing, run
+  `scripts/install-agent-rules.sh --agent claude|codex|both` with the appropriate selection
+  before working.
 - Login nodes are shared and policed: no traversals, no long compute, nothing heavy left
   running unattended — busy login-resident processes get SIGTERM'd at random. Anything
   computationally substantial goes through an allocation
