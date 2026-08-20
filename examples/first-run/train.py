@@ -14,7 +14,7 @@ import mlflow
 import torch
 import torch.nn as nn
 
-EXPERIMENT = "ergodic-claude-first-run"
+EXPERIMENT = "ergodic-agent-workflows-first-run"
 
 
 def main() -> None:

@@ -103,7 +103,8 @@ export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/${REPO}-deploy -o IdentitiesOnly=yes -
 MIRROR="$SCRATCH/${REPO}-mirror.git"
 RUNDIR="$SCRATCH/${REPO}-runs/${SHA}"
 VENV="${SOFTWARE_ROOT}/$USER/venvs/${REPO}"
-ECSH="${SOFTWARE_ROOT}/$USER/ergodic-claude.sh"
+ECSH="${SOFTWARE_ROOT}/$USER/ergodic-agent-workflows.sh"
+[ -f "$ECSH" ] || ECSH="${SOFTWARE_ROOT}/$USER/ergodic-claude.sh"
 
 # 1. bare mirror (clone once, then fetch to update)
 if [ ! -d "$MIRROR" ]; then

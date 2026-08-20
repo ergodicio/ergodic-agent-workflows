@@ -1,7 +1,7 @@
 [project]
 name = "first-run"
 version = "0.1.0"
-description = "Minimal end-to-end demo for the ergodic-claude NERSC + MLflow loop."
+description = "Minimal end-to-end demo for the ergodic-agent-workflows NERSC + MLflow loop."
 requires-python = ">=3.11"
 dependencies = [
     "mlflow>=2.14",

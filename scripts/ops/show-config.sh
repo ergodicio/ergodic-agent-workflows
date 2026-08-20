@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Print the resolved ergodic-claude config — which account, project space, QOS, etc.
+# Print the resolved ergodic-agent-workflows config — which account, project space, QOS, etc.
 # the helpers will actually use, after shell env > user config > repo defaults.
 #
 # Usage:
@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=config.sh
 . "$SCRIPT_DIR/config.sh"
 
-KEYS="EC_CONFIG EC_SSH_HOST EC_ACCOUNT EC_ACCOUNT_GPU EC_SOFTWARE_ROOT EC_QOS EC_CONSTRAINT EC_TIME_LIMIT EC_NODES EC_GPUS_PER_NODE"
+KEYS="EC_CONFIG EC_CONFIG_SOURCE EC_SSH_HOST EC_ACCOUNT EC_ACCOUNT_GPU EC_SOFTWARE_ROOT EC_QOS EC_CONSTRAINT EC_TIME_LIMIT EC_NODES EC_GPUS_PER_NODE"
 
 case "${1:-}" in
   "")

@@ -5,7 +5,7 @@ Usage:
     mlflow-get-params.py <run_id>
 
 Requires MLFLOW_TRACKING_URI / USERNAME / PASSWORD in the environment
-(see the ergodic-claude README).
+(see the ergodic-agent-workflows README).
 """
 
 import pathlib
