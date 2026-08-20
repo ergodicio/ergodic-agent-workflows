@@ -46,7 +46,7 @@
 #SBATCH --nodes=4
 #SBATCH --gpus-per-node=4            # REQUIRED — without it the parsl srun step gets CUDA_ERROR_NO_DEVICE
 #SBATCH --time=04:00:00
-#SBATCH --output=workdir/%x-%j.out   # workdir/ is excluded from sync --delete, so logs persist
+#SBATCH --output=workdir/%x-%j.out   # workdir/ is excluded from source sync, so logs persist
 
 set -e   # not -u: sourcing ~/.bash_profile.ext / ergodic-claude.sh may reference unset vars
 

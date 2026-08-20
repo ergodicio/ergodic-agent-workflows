@@ -508,8 +508,8 @@ ssh perlmutter "cd \$PSCRATCH/<repo> && mkdir -p workdir && nohup setsid srun --
 ```
 
 Detached remotely, logging to `workdir/`, for the reasons the `nersc-workflow` skill gives:
-a locally-detached `ssh` takes the step down with your session, and anything written outside
-`workdir/` is deleted by the next `sync-up --delete`.
+a locally-detached `ssh` takes the step down with your session, and `workdir/` keeps logs
+separate from source files and readable through `read-log.sh`.
 
 `--cpu-bind=none` matters: without it the driver's step binds to a subset of CPUs and its
 worker children inherit that binding, so the workers land on a handful of cores. It is what
@@ -706,8 +706,8 @@ with mlflow.start_run(run_id=parent_id, run_name=f"{cfg['mlflow']['run']}-opt") 
 `mlflow.artifacts.download_artifacts(run_id=parent, artifact_path=..., dst_path=...)` then
 `tree_deserialise_leaves`). Persist the **parent run id** (a sidecar file, or an MLflow tag) so
 a resumed/resubmitted job reopens the SAME parent with `mlflow.start_run(run_id=parent_id)` and
-all steps stay under one campaign. Put local checkpoints in a `sync-up`-excluded dir
-(`checkpoints/`) so `rsync --delete` doesn't wipe them.
+all steps stay under one campaign. Put local checkpoints in the `sync-up`-excluded
+`checkpoints/` directory so they remain local rather than copying into the remote development tree.
 
 Reference implementations: `adept/_tf1d/train_damping.py` (the original parent/child + grad
 artifact pattern) and `kinetic-srs/sims/vlasov-coarsegrain-closure/train.py` (the hybrid
