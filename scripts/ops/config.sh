@@ -3,7 +3,7 @@
 # Resolution order — first one to set a value wins:
 #   1. EC_* exported in your shell    — one-off override for a single command
 #   2. $EC_CONFIG                     — your persistent settings, outside the repo
-#                                       (default: ~/.config/ergodic-claude/config.sh)
+#                                       (default: ~/.config/ergodic-agent-workflows/config.sh)
 #   3. the defaults below             — team-wide, tracked in git
 #
 # There is deliberately NO default account. NERSC users commonly belong to several
@@ -17,12 +17,19 @@
 # (e.g. \$PSCRATCH on the NERSC login node), not locally.
 
 # ---- User config -----------------------------------------------------------
-: "${EC_CONFIG:=${XDG_CONFIG_HOME:-$HOME/.config}/ergodic-claude/config.sh}"
-if [ -f "$EC_CONFIG" ]; then
+DEFAULT_EC_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/ergodic-agent-workflows/config.sh"
+LEGACY_EC_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/ergodic-claude/config.sh"
+: "${EC_CONFIG:=$DEFAULT_EC_CONFIG}"
+EC_CONFIG_SOURCE="$EC_CONFIG"
+if [ ! -f "$EC_CONFIG_SOURCE" ] && [ "$EC_CONFIG" = "$DEFAULT_EC_CONFIG" ] \
+    && [ -f "$LEGACY_EC_CONFIG" ]; then
+    EC_CONFIG_SOURCE="$LEGACY_EC_CONFIG"
+fi
+if [ -f "$EC_CONFIG_SOURCE" ]; then
     # The generated file uses `: "${EC_X:=…}"` too, so anything already exported
     # in the environment still takes precedence over it.
     # shellcheck source=/dev/null
-    . "$EC_CONFIG"
+    . "$EC_CONFIG_SOURCE"
 fi
 
 # ---- SSH transport ---------------------------------------------------------
@@ -47,7 +54,7 @@ if [ -n "$EC_ACCOUNT" ] && [ -z "$EC_ACCOUNT_GPU" ]; then
     EC_ACCOUNT_GPU="${EC_ACCOUNT%_g}_g"
 fi
 
-# Project space on global common: venvs, uv-managed Pythons, ergodic-claude.sh.
+# Project space on global common: venvs, uv-managed Pythons, ergodic-agent-workflows.sh.
 # Read-only on compute nodes — mutate it from a login node only. The directory is
 # named after the bare project, never the `_g` account.
 : "${EC_SOFTWARE_ROOT:=}"
@@ -75,9 +82,9 @@ ec_require_account() {
     [ -n "${EC_ACCOUNT:-}" ] && return 0
     cat >&2 <<EOF
 
-[ergodic-claude] No NERSC account configured — refusing to guess which project to bill.
+[ergodic-agent-workflows] No NERSC account configured — refusing to guess which project to bill.
 
-Your projects:   ~/.ergodic-claude/ops/list-accounts.sh
+Your projects:   ~/.ergodic-agent-workflows/ops/list-accounts.sh
 Set one:         mkdir -p "$(dirname "$EC_CONFIG")"
                  echo ': "\${EC_ACCOUNT:=m4490}"' >> "$EC_CONFIG"
 Or per command:  EC_ACCOUNT=m4490 $0 ...

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# bootstrap-local.sh — set up the local side of the ergodic-claude workflow.
+# bootstrap-local.sh — set up the local side of the ergodic-agent-workflows workflow.
 #
 # What this does:
 #   1. Installs uv if it's missing (per-user, no sudo)
 #   2. Symlinks the skills into the selected agent's global skill directory
-#   3. Symlinks the ops scripts into ~/.ergodic-claude/ops/ (agent-neutral stable path)
+#   3. Symlinks the ops scripts into ~/.ergodic-agent-workflows/ops/ (agent-neutral stable path)
 #   4. Installs NERSC's required agent rules into the selected agent's guidance file
 #   5. Verifies you can ssh to perlmutter
 #   6. Prints what to do next
@@ -16,11 +16,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLAUDE_SKILLS_DIR="${HOME}/.claude/skills"
 CODEX_SKILLS_DIR="${HOME}/.codex/skills"
-OPS_DIR="${HOME}/.ergodic-claude/ops"
+OPS_DIR="${HOME}/.ergodic-agent-workflows/ops"
+LEGACY_OPS_DIR="${HOME}/.ergodic-claude/ops"
 
-say() { printf "\n\033[1;36m[ergodic-claude]\033[0m %s\n" "$*"; }
-warn() { printf "\n\033[1;33m[ergodic-claude]\033[0m %s\n" "$*"; }
-die() { printf "\n\033[1;31m[ergodic-claude]\033[0m %s\n" "$*" >&2; exit 1; }
+say() { printf "\n\033[1;36m[ergodic-agent-workflows]\033[0m %s\n" "$*"; }
+warn() { printf "\n\033[1;33m[ergodic-agent-workflows]\033[0m %s\n" "$*"; }
+die() { printf "\n\033[1;31m[ergodic-agent-workflows]\033[0m %s\n" "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
@@ -99,9 +100,20 @@ rm -f "${OPS_DIR}"
 ln -s "${REPO_ROOT}/scripts/ops" "${OPS_DIR}"
 say "Linked ops scripts: ${OPS_DIR} -> ${REPO_ROOT}/scripts/ops"
 
-# Keep the former Claude path and an equivalent Codex path as compatibility
-# links. Existing prompts and older skill copies can continue to invoke them,
-# while new instructions use the neutral path above.
+# Keep the pre-rename path working for existing prompts, approvals, and shell
+# history. It points at the new canonical path rather than directly at the repo.
+mkdir -p "$(dirname "${LEGACY_OPS_DIR}")"
+if [[ -e "${LEGACY_OPS_DIR}" && ! -L "${LEGACY_OPS_DIR}" ]]; then
+  warn "${LEGACY_OPS_DIR} exists and is not a symlink — leaving it untouched"
+else
+  rm -f "${LEGACY_OPS_DIR}"
+  ln -s "${OPS_DIR}" "${LEGACY_OPS_DIR}"
+  say "Linked legacy path: ${LEGACY_OPS_DIR} -> ${OPS_DIR}"
+fi
+
+# Keep the agent-specific paths as compatibility links. Existing prompts and
+# older skill copies can continue to invoke them, while new instructions use
+# the canonical path above.
 for ops_compat_dir in "${OPS_COMPAT_DIRS[@]}"; do
   mkdir -p "$(dirname "${ops_compat_dir}")"
   if [[ -e "${ops_compat_dir}" && ! -L "${ops_compat_dir}" ]]; then
@@ -127,7 +139,7 @@ if ssh -o ConnectTimeout=5 -o BatchMode=yes perlmutter true 2>/dev/null; then
 else
   cat >&2 <<EOF
 
-[ergodic-claude] ssh to 'perlmutter' is not working non-interactively.
+[ergodic-agent-workflows] ssh to 'perlmutter' is not working non-interactively.
 
 Likely causes:
   1. The 'perlmutter' alias is missing from ~/.ssh/config.

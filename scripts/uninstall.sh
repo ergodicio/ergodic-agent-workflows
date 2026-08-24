@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# uninstall.sh — remove artifacts installed by the ergodic-claude bootstrap.
+# uninstall.sh — remove artifacts installed by the ergodic-agent-workflows bootstrap.
 #
 # Removes only managed rules blocks and symlinks whose targets exactly match this checkout.
 # User-owned files, directories, backups, and symlinks to other targets are left untouched.
@@ -7,11 +7,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OPS_DIR="${HOME}/.ergodic-claude/ops"
+OPS_DIR="${HOME}/.ergodic-agent-workflows/ops"
+LEGACY_OPS_DIR="${HOME}/.ergodic-claude/ops"
 
-say() { printf "\n\033[1;36m[ergodic-claude]\033[0m %s\n" "$*"; }
-warn() { printf "\n\033[1;33m[ergodic-claude]\033[0m %s\n" "$*"; }
-die() { printf "\n\033[1;31m[ergodic-claude]\033[0m %s\n" "$*" >&2; exit 1; }
+say() { printf "\n\033[1;36m[ergodic-agent-workflows]\033[0m %s\n" "$*"; }
+warn() { printf "\n\033[1;33m[ergodic-agent-workflows]\033[0m %s\n" "$*"; }
+die() { printf "\n\033[1;31m[ergodic-agent-workflows]\033[0m %s\n" "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
@@ -48,8 +49,8 @@ esac
 
 remove_managed_link() {
   local link="$1"
-  local expected="$2"
-  local actual
+  local actual expected matched=0
+  shift
 
   if [ ! -L "$link" ]; then
     if [ -e "$link" ]; then
@@ -61,7 +62,10 @@ remove_managed_link() {
   fi
 
   actual="$(readlink "$link")"
-  if [ "$actual" != "$expected" ]; then
+  for expected in "$@"; do
+    [ "$actual" != "$expected" ] || matched=1
+  done
+  if [ "$matched" -ne 1 ]; then
     warn "Leaving symlink with an unexpected target untouched: ${link} -> ${actual}"
     return
   fi
@@ -85,7 +89,7 @@ for selected_agent in "${AGENTS[@]}"; do
   for skill in nersc-workflow mlflow-query adept-run; do
     remove_managed_link "${skills_dir}/${skill}" "${REPO_ROOT}/skills/${skill}"
   done
-  remove_managed_link "$compat_link" "$OPS_DIR"
+  remove_managed_link "$compat_link" "$OPS_DIR" "$LEGACY_OPS_DIR"
 done
 
 "${REPO_ROOT}/scripts/install-agent-rules.sh" --remove --agent "$AGENT"
@@ -94,9 +98,16 @@ done
 # compatibility link created by bootstrap-local.sh.
 CLAUDE_COMPAT="${HOME}/.claude/scripts/ergodic"
 CODEX_COMPAT="${HOME}/.codex/scripts/ergodic"
-if ! { [ -L "$CLAUDE_COMPAT" ] && [ "$(readlink "$CLAUDE_COMPAT")" = "$OPS_DIR" ]; } \
-    && ! { [ -L "$CODEX_COMPAT" ] && [ "$(readlink "$CODEX_COMPAT")" = "$OPS_DIR" ]; }; then
+is_managed_compat_link() {
+  local target
+  [ -L "$1" ] || return 1
+  target="$(readlink "$1")"
+  [ "$target" = "$OPS_DIR" ] || [ "$target" = "$LEGACY_OPS_DIR" ]
+}
+if ! is_managed_compat_link "$CLAUDE_COMPAT" \
+    && ! is_managed_compat_link "$CODEX_COMPAT"; then
   remove_managed_link "$OPS_DIR" "${REPO_ROOT}/scripts/ops"
+  remove_managed_link "$LEGACY_OPS_DIR" "$OPS_DIR" "${REPO_ROOT}/scripts/ops"
 else
   say "Keeping shared ops link because another agent still uses it: ${OPS_DIR}"
 fi

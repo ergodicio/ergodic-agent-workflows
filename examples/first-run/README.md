@@ -15,7 +15,7 @@ After you've run both bootstrap scripts (see the repo root [README](../../README
 That's it. Claude will:
 1. Stamp the git commit
 2. rsync this directory to `$PSCRATCH/first-run/`
-3. **On the login node**: ensure the venv exists at `$ECLAUDE_VENVS/first-run` (i.e. `<project-space>/$USER/venvs/first-run`), creating it and `uv pip install`-ing `pyproject.toml` if missing (takes ~3–5 minutes the first time; seconds after)
+3. **On the login node**: ensure the venv exists at `$ERGODIC_VENVS/first-run` (i.e. `<project-space>/$USER/venvs/first-run`), creating it and `uv pip install`-ing `pyproject.toml` if missing (takes ~3–5 minutes the first time; seconds after)
 4. **On a compute node**: allocate an interactive GPU node, activate the venv, source MLflow credentials, run `python -u train.py`
 5. Background the job and tee output to `/tmp/nersc_first-run.log`
 
@@ -28,7 +28,7 @@ Claude will use the `mlflow-query` skill to fetch loss history from the tracking
 ## What to look for
 
 - Local log: `tail -f /tmp/nersc_first-run.log` should show loss decreasing from ~1.0 to ~0.01
-- MLflow UI: https://continuum.ergodic.io/experiments/ — experiment `ergodic-claude-first-run`
+- MLflow UI: https://continuum.ergodic.io/experiments/ — experiment `ergodic-agent-workflows-first-run`
 
 ## Troubleshooting
 

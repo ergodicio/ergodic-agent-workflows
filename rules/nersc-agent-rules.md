@@ -11,7 +11,7 @@ Pass `--remove --agent claude|codex|both` to remove the selected managed block.
 
 The one deviation from NERSC's text: their example routes heavy searches through a
 `$perlmutter-compute` subagent, which we don't have. Ours routes them through an
-interactive allocation instead (`~/.ergodic-claude/ops/interactive-cpu.sh`).
+interactive allocation instead (`~/.ergodic-agent-workflows/ops/interactive-cpu.sh`).
 
 ---
 
@@ -38,7 +38,7 @@ driving Perlmutter from a laptop. A remote shell is not an exemption.
   to approve an equivalent broad scan through another command.
 - A compute allocation is not permission for an unbounded traversal of a shared
   filesystem. Narrow the search first; route only bounded, computationally substantial
-  searches through a compute allocation (`~/.ergodic-claude/ops/interactive-cpu.sh`),
+  searches through a compute allocation (`~/.ergodic-agent-workflows/ops/interactive-cpu.sh`),
   never a login node.
 
 Bounded roots on Perlmutter that are almost always what you actually wanted:

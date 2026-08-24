@@ -10,9 +10,9 @@
 #                                           filesystem as venvs/ or uv copies instead
 #                                           of hardlinking; see the env-file note below)
 #        $PSCRATCH/                                 (working area for synced repos)
-#   3. Writes <project-space>/$USER/ergodic-claude.sh with PATH, env vars,
+#   3. Writes <project-space>/$USER/ergodic-agent-workflows.sh with PATH, env vars,
 #      and a cd-hook that points uv at the right per-project venv
-#   4. Prepends a marked block sourcing <project-space>/$USER/ergodic-claude.sh to
+#   4. Prepends a marked block sourcing <project-space>/$USER/ergodic-agent-workflows.sh to
 #      ~/.bashrc, ~/.zshenv, and ~/.bash_profile — at the TOP, so it runs before any
 #      "return unless interactive" guard those files commonly start with
 #      (Perlmutter does not source the Cori-era ~/.bash_profile.ext / ~/.zshrc.ext files)
@@ -32,8 +32,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-say() { printf "\n\033[1;36m[ergodic-claude]\033[0m %s\n" "$*"; }
-die() { printf "\n\033[1;31m[ergodic-claude]\033[0m %s\n" "$*" >&2; exit 1; }
+say() { printf "\n\033[1;36m[ergodic-agent-workflows]\033[0m %s\n" "$*"; }
+die() { printf "\n\033[1;31m[ergodic-agent-workflows]\033[0m %s\n" "$*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
@@ -75,7 +75,12 @@ ssh -o ConnectTimeout=10 perlmutter true 2>/dev/null \
 . "${REPO_ROOT}/scripts/ops/config.sh"
 
 if [ -n "$EC_ACCOUNT" ]; then
-  say "Using project ${EC_ACCOUNT} (from ${EC_CONFIG:-env})"
+  say "Using project ${EC_ACCOUNT} (from ${EC_CONFIG_SOURCE:-env})"
+  if [ "${EC_CONFIG_SOURCE:-}" != "$EC_CONFIG" ] && [ ! -f "$EC_CONFIG" ]; then
+    mkdir -p "$(dirname "$EC_CONFIG")"
+    cp "$EC_CONFIG_SOURCE" "$EC_CONFIG"
+    say "Migrated account config to ${EC_CONFIG}"
+  fi
 else
   say "Looking up your NERSC projects…"
   # while-read, not `mapfile`: macOS still ships bash 3.2 as /bin/bash.
@@ -109,9 +114,9 @@ Re-run interactively, or pick one now:
   # Persist it outside the repo so `git pull` can't change which project you bill.
   mkdir -p "$(dirname "$EC_CONFIG")"
   {
-    printf '# ergodic-claude user config — written by bootstrap-nersc.sh, safe to edit.\n'
+    printf '# ergodic-agent-workflows user config — written by bootstrap-nersc.sh, safe to edit.\n'
     printf '# `: "${VAR:=value}"` form means an exported EC_* in your shell still wins.\n'
-    printf '# Your projects: ~/.ergodic-claude/ops/list-accounts.sh\n'
+    printf '# Your projects: ~/.ergodic-agent-workflows/ops/list-accounts.sh\n'
     printf ': "${EC_ACCOUNT:=%s}"\n' "$EC_ACCOUNT"
   } > "$EC_CONFIG"
   say "Wrote ${EC_CONFIG} (EC_ACCOUNT=${EC_ACCOUNT})"
@@ -128,9 +133,12 @@ ssh perlmutter "EC_SOFTWARE_ROOT='${EC_SOFTWARE_ROOT}' bash -s" <<'REMOTE'
 set -euo pipefail
 
 PROJECT_ROOT="${EC_SOFTWARE_ROOT}/${USER}"
-ENV_FILE="${PROJECT_ROOT}/ergodic-claude.sh"
-MARKER="# >>> ergodic-claude managed >>>"
-END_MARKER="# <<< ergodic-claude managed <<<"
+ENV_FILE="${PROJECT_ROOT}/ergodic-agent-workflows.sh"
+LEGACY_ENV_FILE="${PROJECT_ROOT}/ergodic-claude.sh"
+MARKER="# >>> ergodic-agent-workflows managed >>>"
+END_MARKER="# <<< ergodic-agent-workflows managed <<<"
+LEGACY_MARKER="# >>> ergodic-claude managed >>>"
+LEGACY_END_MARKER="# <<< ergodic-claude managed <<<"
 
 echo "[remote] PROJECT_ROOT=${PROJECT_ROOT}"
 
@@ -153,17 +161,17 @@ fi
 # 3. Write the canonical env file (overwrite — this is fully managed by us)
 cat >"${ENV_FILE}" <<EOF
 #!/usr/bin/env bash
-# Managed by ergodic-claude/scripts/bootstrap-nersc.sh — re-run that to update.
+# Managed by ergodic-agent-workflows/scripts/bootstrap-nersc.sh — re-run that to update.
 # Sourced from the managed blocks at the top of ~/.bashrc, ~/.zshenv, and ~/.bash_profile.
 
 # A login shell can hit this twice — once from ~/.bash_profile, once more if the
 # user's profile chains to ~/.bashrc. Make the second source a no-op.
-[ -n "\${_ECLAUDE_ENV_SOURCED:-}" ] && return 0
-_ECLAUDE_ENV_SOURCED=1
+[ -n "\${_ERGODIC_AGENT_WORKFLOWS_ENV_SOURCED:-}" ] && return 0
+_ERGODIC_AGENT_WORKFLOWS_ENV_SOURCED=1
 
 # uv: binary on PATH, Pythons and cache in global common (persistent).
 #
-# The cache MUST sit on the same filesystem as the venvs in \$ECLAUDE_VENVS. uv
+# The cache MUST sit on the same filesystem as the venvs in \$ERGODIC_VENVS. uv
 # hardlinks package files out of the cache into a venv, so N venvs sharing a
 # dependency cost one copy — but only within one filesystem. Point the cache at
 # \$PSCRATCH (Lustre) or \$HOME (/global/u2) and uv silently falls back to a full
@@ -175,7 +183,9 @@ export UV_PYTHON_INSTALL_DIR="${PROJECT_ROOT}/uv-python"
 export UV_CACHE_DIR="${PROJECT_ROOT}/.cache/uv"
 
 # Where per-project venvs live (read-only from compute nodes — only mutate from login node)
-export ECLAUDE_VENVS="${PROJECT_ROOT}/venvs"
+export ERGODIC_VENVS="${PROJECT_ROOT}/venvs"
+# Compatibility for scripts and running jobs created before the repository rename.
+export ECLAUDE_VENVS="\${ERGODIC_VENVS}"
 
 # MLflow tracking server (non-secret)
 export MLFLOW_TRACKING_URI="https://continuum.ergodic.io/experiments/"
@@ -186,17 +196,35 @@ export MLFLOW_TRACKING_URI="https://continuum.ergodic.io/experiments/"
 # cd-hook: point uv at the per-project venv keyed off the repo basename. Works in
 # bash and zsh because both honor a 'cd' function override. The hook also runs at
 # shell startup so the first prompt already has UV_PROJECT_ENVIRONMENT set.
-_eclaude_uv_hook() {
+_ergodic_agent_workflows_uv_hook() {
   local root name
   root="\$(git rev-parse --show-toplevel 2>/dev/null || echo "\$PWD")"
   name="\$(basename "\$root")"
-  export UV_PROJECT_ENVIRONMENT="\${ECLAUDE_VENVS}/\${name}"
+  export UV_PROJECT_ENVIRONMENT="\${ERGODIC_VENVS}/\${name}"
 }
-cd() { builtin cd "\$@" && _eclaude_uv_hook; }
-_eclaude_uv_hook
+cd() { builtin cd "\$@" && _ergodic_agent_workflows_uv_hook; }
+_ergodic_agent_workflows_uv_hook
 EOF
 chmod 644 "${ENV_FILE}"
 echo "[remote] wrote ${ENV_FILE}"
+
+# Keep old jobs and shell snippets working while making the new file canonical.
+cat >"${LEGACY_ENV_FILE}" <<EOF
+#!/usr/bin/env bash
+# Compatibility shim managed by ergodic-agent-workflows/scripts/bootstrap-nersc.sh.
+. "${ENV_FILE}"
+EOF
+chmod 644 "${LEGACY_ENV_FILE}"
+echo "[remote] wrote compatibility shim ${LEGACY_ENV_FILE}"
+
+strip_managed_env_blocks() {
+  awk -v m="$MARKER" -v e="$END_MARKER" \
+      -v lm="$LEGACY_MARKER" -v le="$LEGACY_END_MARKER" '
+    index($0,m) || index($0,lm) {in_block=1; next}
+    (index($0,e) || index($0,le)) && in_block {in_block=0; next}
+    !in_block {print}
+  ' "$1"
+}
 
 # 4. Wire into ~/.bashrc, ~/.zshenv, and ~/.bash_profile. Perlmutter does NOT use
 #    the Cori-era ~/.bash_profile.ext / ~/.zshrc.ext convention — nothing sources
@@ -206,21 +234,17 @@ echo "[remote] wrote ${ENV_FILE}"
 #    unreachable below it for exactly the non-interactive shells the workflow
 #    scripts run (`ssh perlmutter …`, `bash -lc`). Sourcing from ~/.bash_profile
 #    too covers login shells whose profile never chains to ~/.bashrc;
-#    ergodic-claude.sh makes the second source in a chained profile a no-op.
+#    ergodic-agent-workflows.sh makes the second source in a chained profile a no-op.
 #    For zsh the file is ~/.zshenv — the one zsh reads in EVERY mode (login,
 #    interactive, non-interactive, scripts); ~/.zshrc is interactive-only and
 #    would leave `ssh perlmutter cmd` blind for zsh users.
 #    Marker lines let re-runs replace the block wherever an old run left it.
 for f in "${HOME}/.bashrc" "${HOME}/.zshenv" "${HOME}/.bash_profile"; do
   touch "$f"
-  if grep -qF "$MARKER" "$f"; then
+  if grep -qF "$MARKER" "$f" || grep -qF "$LEGACY_MARKER" "$f"; then
     # Strip the old managed block (pre-2026-08-18 runs appended it at the bottom,
     # or chained ~/.bash_profile -> ~/.bashrc here) before prepending fresh.
-    awk -v m="$MARKER" -v e="$END_MARKER" '
-      $0 ~ m   {in_block=1; next}
-      $0 ~ e   {in_block=0; next}
-      !in_block {print}
-    ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+    strip_managed_env_blocks "$f" > "$f.tmp" && mv "$f.tmp" "$f"
   fi
   {
     printf "%s\n" "$MARKER"
@@ -236,12 +260,8 @@ done
 # files (nothing sources them on Perlmutter) and ~/.zshrc (superseded by ~/.zshenv,
 # which zsh reads in every mode instead of only interactively).
 for f in "${HOME}/.bash_profile.ext" "${HOME}/.zshrc.ext" "${HOME}/.zshrc"; do
-  if [ -f "$f" ] && grep -qF "$MARKER" "$f"; then
-    awk -v m="$MARKER" -v e="$END_MARKER" '
-      $0 ~ m   {in_block=1; next}
-      $0 ~ e   {in_block=0; next}
-      !in_block {print}
-    ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  if [ -f "$f" ] && { grep -qF "$MARKER" "$f" || grep -qF "$LEGACY_MARKER" "$f"; }; then
+    strip_managed_env_blocks "$f" > "$f.tmp" && mv "$f.tmp" "$f"
     echo "[remote] removed stale block from $f"
   fi
 done

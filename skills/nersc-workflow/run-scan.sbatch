@@ -3,7 +3,7 @@
 #
 # Copy this into a campaign next to its scan.py (e.g. sims/<campaign>/run-scan.sbatch),
 # set DRIVER below, then submit from your repo root with:
-#     ~/.ergodic-claude/ops/submit-batch.sh sims/<campaign>/run-scan.sbatch
+#     ~/.ergodic-agent-workflows/ops/submit-batch.sh sims/<campaign>/run-scan.sbatch
 # (submit-batch.sh runs `cd $PSCRATCH/<repo> && mkdir -p workdir && sbatch <this>`.)
 #
 # This is the ALTERNATIVE to detaching the multi-node one-shot, not the default: for
@@ -38,9 +38,9 @@
 #  job + its workdir/%x-... log are named after whatever project you run this from.
 #  If you `sbatch` this directly, SLURM names the job after the script filename.)
 # (no --account here either: submit-batch.sh passes `-A $EC_ACCOUNT_GPU` from your
-#  ergodic-claude config, which overrides any #SBATCH --account. If you sbatch this
+#  ergodic-agent-workflows config, which overrides any #SBATCH --account. If you sbatch this
 #  directly you get your SLURM default account — check it with
-#  `~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU` and pass -A yourself.)
+#  `~/.ergodic-agent-workflows/ops/show-config.sh EC_ACCOUNT_GPU` and pass -A yourself.)
 #SBATCH --qos=regular              # interactive QOS rejects sbatch (tested 2026-07-03); regular also lifts the 4 h cap
 #SBATCH --constraint=gpu
 #SBATCH --nodes=4
@@ -48,19 +48,19 @@
 #SBATCH --time=04:00:00
 #SBATCH --output=workdir/%x-%j.out   # workdir/ is excluded from source sync, so logs persist
 
-set -e   # not -u: sourcing ~/.bash_profile.ext / ergodic-claude.sh may reference unset vars
+set -e   # not -u: sourcing ~/.bash_profile.ext / ergodic-agent-workflows.sh may reference unset vars
 
 # --- edit per campaign: driver path, relative to the repo root ---
 DRIVER="sims/<campaign>/scan.py"
 
 REPO="$(basename "$SLURM_SUBMIT_DIR")"     # submit-batch.sh cd's to $PSCRATCH/<repo> before sbatch
 
-source ~/.bash_profile.ext                 # MLflow env + creds (sources ergodic-claude.sh)
+source ~/.bash_profile.ext                 # MLflow env + creds (sources ergodic-agent-workflows.sh)
 
-# $ECLAUDE_VENVS comes from ergodic-claude.sh, so the project dir isn't hardcoded here
+# $ERGODIC_VENVS comes from ergodic-agent-workflows.sh, so the project dir isn't hardcoded here
 # and can't drift from the account this job is billed to.
-: "${ECLAUDE_VENVS:?not set — run bootstrap-nersc.sh, or source ergodic-claude.sh}"
-VENV="$ECLAUDE_VENVS/$REPO"
+: "${ERGODIC_VENVS:?not set — run bootstrap-nersc.sh, or source ergodic-agent-workflows.sh}"
+VENV="$ERGODIC_VENVS/$REPO"
 source "$VENV/bin/activate"
 export PYTHONPATH="$SLURM_SUBMIT_DIR"
 cd "$SLURM_SUBMIT_DIR"

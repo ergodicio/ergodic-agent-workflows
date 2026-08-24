@@ -30,12 +30,14 @@ AGENT="both"
 PRINT_ONLY=0
 REMOVE=0
 
-MARKER="<!-- >>> ergodic-claude nersc-agent-rules >>> -->"
-END_MARKER="<!-- <<< ergodic-claude nersc-agent-rules <<< -->"
+MARKER="<!-- >>> ergodic-agent-workflows nersc-agent-rules >>> -->"
+END_MARKER="<!-- <<< ergodic-agent-workflows nersc-agent-rules <<< -->"
+LEGACY_MARKER="<!-- >>> ergodic-claude nersc-agent-rules >>> -->"
+LEGACY_END_MARKER="<!-- <<< ergodic-claude nersc-agent-rules <<< -->"
 
-say() { printf "\n\033[1;36m[ergodic-claude]\033[0m %s\n" "$*"; }
-warn() { printf "\n\033[1;33m[ergodic-claude]\033[0m %s\n" "$*"; }
-die() { printf "\n\033[1;31m[ergodic-claude]\033[0m %s\n" "$*" >&2; exit 1; }
+say() { printf "\n\033[1;36m[ergodic-agent-workflows]\033[0m %s\n" "$*"; }
+warn() { printf "\n\033[1;33m[ergodic-agent-workflows]\033[0m %s\n" "$*"; }
+die() { printf "\n\033[1;31m[ergodic-agent-workflows]\033[0m %s\n" "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -71,6 +73,27 @@ fi
 TMPDIR_EC="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_EC"' EXIT
 
+validate_managed_blocks() {
+  local target="$1"
+  if grep -qF "$MARKER" "$target"; then
+    grep -qF "$END_MARKER" "$target" \
+      || die "$target has the opening marker but not the closing one. Fix it by hand, then re-run."
+  fi
+  if grep -qF "$LEGACY_MARKER" "$target"; then
+    grep -qF "$LEGACY_END_MARKER" "$target" \
+      || die "$target has the legacy opening marker but not the closing one. Fix it by hand, then re-run."
+  fi
+}
+
+strip_managed_blocks() {
+  awk -v m="$MARKER" -v e="$END_MARKER" \
+      -v lm="$LEGACY_MARKER" -v le="$LEGACY_END_MARKER" '
+    index($0,m) || index($0,lm) {in_block=1; next}
+    (index($0,e) || index($0,le)) && in_block {in_block=0; next}
+    !in_block {print}
+  ' "$1"
+}
+
 if [ "$REMOVE" -eq 1 ]; then
   for TARGET in "${TARGETS[@]}"; do
     if [ ! -f "$TARGET" ]; then
@@ -78,19 +101,14 @@ if [ "$REMOVE" -eq 1 ]; then
       continue
     fi
 
-    if ! grep -qF "$MARKER" "$TARGET"; then
+    if ! grep -qF "$MARKER" "$TARGET" && ! grep -qF "$LEGACY_MARKER" "$TARGET"; then
       say "No managed NERSC agent rules in ${TARGET}"
       continue
     fi
-    grep -qF "$END_MARKER" "$TARGET" \
-      || die "$TARGET has the opening marker but not the closing one. Fix it by hand (restore or delete the block), then re-run."
+    validate_managed_blocks "$TARGET"
 
     cp "$TARGET" "${TARGET}.bak"
-    awk -v m="$MARKER" -v e="$END_MARKER" '
-      index($0,m) {in_block=1; next}
-      index($0,e) && in_block {in_block=0; next}
-      !in_block {print}
-    ' "$TARGET" > "${TMPDIR_EC}/without-managed-block.md"
+    strip_managed_blocks "$TARGET" > "${TMPDIR_EC}/without-managed-block.md"
     mv "${TMPDIR_EC}/without-managed-block.md" "$TARGET"
     say "Removed managed NERSC agent rules from ${TARGET} (previous copy: ${TARGET}.bak)"
   done
@@ -103,7 +121,7 @@ BLOCK="${TMPDIR_EC}/block.md"
 # installed; the prose above it is for humans reading the repo.
 {
   printf '%s\n' "$MARKER"
-  printf '%s\n' "<!-- Managed by ergodic-claude/scripts/install-agent-rules.sh — re-run to refresh. -->"
+  printf '%s\n' "<!-- Managed by ergodic-agent-workflows/scripts/install-agent-rules.sh — re-run to refresh. -->"
   printf '%s\n' "<!-- Source: rules/nersc-agent-rules.md · https://docs.nersc.gov/development/coding-agents/ -->"
   awk '/<!-- BLOCK START/ {grab=1; next} /<!-- BLOCK END/ {grab=0; next} grab' "$RULES"
   printf '%s\n' "$END_MARKER"
@@ -121,23 +139,25 @@ for TARGET in "${TARGETS[@]}"; do
   mkdir -p "$(dirname "$TARGET")"
   [ -f "$TARGET" ] || : > "$TARGET"
 
-  if grep -qF "$MARKER" "$TARGET"; then
-    grep -qF "$END_MARKER" "$TARGET" \
-      || die "$TARGET has the opening marker but not the closing one. Fix it by hand (restore or delete the block), then re-run."
+  validate_managed_blocks "$TARGET"
 
-  # Already current? Leave the file completely alone.
-  awk -v m="$MARKER" -v e="$END_MARKER" '
-    index($0,m) {grab=1} grab {print} index($0,e) && grab {exit}
-  ' "$TARGET" > "${TMPDIR_EC}/current.md"
+  # Already current, with no legacy duplicate? Leave the file completely alone.
+  if grep -qF "$MARKER" "$TARGET" && ! grep -qF "$LEGACY_MARKER" "$TARGET"; then
+    awk -v m="$MARKER" -v e="$END_MARKER" '
+      index($0,m) {grab=1} grab {print} index($0,e) && grab {exit}
+    ' "$TARGET" > "${TMPDIR_EC}/current.md"
     if cmp -s "${TMPDIR_EC}/current.md" "$BLOCK"; then
       say "NERSC agent rules already current in ${TARGET}"
       continue
     fi
+  fi
 
+  if grep -qF "$MARKER" "$TARGET" || grep -qF "$LEGACY_MARKER" "$TARGET"; then
     cp "$TARGET" "${TARGET}.bak"
-    awk -v m="$MARKER" 'index($0,m) {exit} {print}'          "$TARGET" > "${TMPDIR_EC}/head.md"
-    awk -v e="$END_MARKER" 'tail {print} index($0,e) {tail=1}' "$TARGET" > "${TMPDIR_EC}/tail.md"
-    cat "${TMPDIR_EC}/head.md" "$BLOCK" "${TMPDIR_EC}/tail.md" > "${TMPDIR_EC}/new.md"
+    strip_managed_blocks "$TARGET" > "${TMPDIR_EC}/new.md"
+    [ -n "$(tail -c1 "${TMPDIR_EC}/new.md")" ] && printf '\n' >> "${TMPDIR_EC}/new.md"
+    [ ! -s "${TMPDIR_EC}/new.md" ] || printf '\n' >> "${TMPDIR_EC}/new.md"
+    cat "$BLOCK" >> "${TMPDIR_EC}/new.md"
     mv "${TMPDIR_EC}/new.md" "$TARGET"
     say "Refreshed NERSC agent rules in ${TARGET} (previous copy: ${TARGET}.bak)"
   else

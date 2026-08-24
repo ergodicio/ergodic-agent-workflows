@@ -110,8 +110,15 @@ require_repo() {
         || die "repo name must contain only letters, numbers, '.', '_', or '-' (got: $REPO)"
 
     STATE_KEY="$(printf '%s' "$REPO_ROOT" | sha256_stream | cut -c1-12)"
-    STATE_DIR="${EC_SESSION_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ergodic-claude/sessions}"
+    STATE_DIR="${EC_SESSION_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ergodic-agent-workflows/sessions}"
     STATE_FILE="${STATE_DIR}/${REPO}-${STATE_KEY}.state"
+    if [ -z "${EC_SESSION_STATE_DIR:-}" ] && [ ! -f "$STATE_FILE" ]; then
+        LEGACY_STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/ergodic-claude/sessions/${REPO}-${STATE_KEY}.state"
+        if [ -f "$LEGACY_STATE_FILE" ]; then
+            STATE_DIR="$(dirname "$LEGACY_STATE_FILE")"
+            STATE_FILE="$LEGACY_STATE_FILE"
+        fi
+    fi
 }
 
 state_value() {
@@ -179,12 +186,15 @@ ensure_active() {
 }
 
 assert_remote_session() {
-    local expected actual
-    expected="ergodic-claude-session-v1
+    local expected legacy_expected actual
+    expected="ergodic-agent-workflows-session-v1
+repo=${REPO}
+session=${SESSION_ID}"
+    legacy_expected="ergodic-claude-session-v1
 repo=${REPO}
 session=${SESSION_ID}"
     actual="$(remote_run cat "$REMOTE_MARKER" 2>/dev/null || true)"
-    [ "$actual" = "$expected" ] \
+    [ "$actual" = "$expected" ] || [ "$actual" = "$legacy_expected" ] \
         || die "refusing to sync: remote session marker is missing or does not match $SESSION_ID"
     remote_run test -d "$REMOTE_SRC" \
         || die "refusing to sync: session src is not a directory"
@@ -329,7 +339,7 @@ start_session() {
     job_name="ec-${REPO:0:24}-${SESSION_ID}"
 
     remote_run mkdir -p "$REMOTE_SRC" "$REMOTE_WORKDIR" "$REMOTE_OUTPUTS"
-    printf 'ergodic-claude-session-v1\nrepo=%s\nsession=%s\n' "$REPO" "$SESSION_ID" |
+    printf 'ergodic-agent-workflows-session-v1\nrepo=%s\nsession=%s\n' "$REPO" "$SESSION_ID" |
         remote_run tee "$REMOTE_MARKER" >/dev/null
 
     case "$KIND" in
@@ -380,15 +390,16 @@ exec_session() {
     load_state
     ensure_active
 
-    local command_q src_q ecsh_q venv_q root_q workdir_q outputs_q inner
+    local command_q src_q ecsh_q legacy_ecsh_q venv_q root_q workdir_q outputs_q inner
     quote_argv "$@"; command_q="$REPLY"
     shell_quote "$REMOTE_SRC"; src_q="$REPLY"
-    shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/ergodic-claude.sh"; ecsh_q="$REPLY"
+    shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/ergodic-agent-workflows.sh"; ecsh_q="$REPLY"
+    shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/ergodic-claude.sh"; legacy_ecsh_q="$REPLY"
     shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/venvs/${REPO}/bin/activate"; venv_q="$REPLY"
     shell_quote "$REMOTE_ROOT"; root_q="$REPLY"
     shell_quote "$REMOTE_WORKDIR"; workdir_q="$REPLY"
     shell_quote "$REMOTE_OUTPUTS"; outputs_q="$REPLY"
-    inner="set -euo pipefail; cd ${src_q}; export EC_SESSION_ROOT=${root_q} EC_SESSION_WORKDIR=${workdir_q} EC_SESSION_OUTPUTS=${outputs_q}; export PYTHONPATH=${src_q}:${src_q}/src\${PYTHONPATH:+:\$PYTHONPATH}; [ ! -f ${ecsh_q} ] || source ${ecsh_q}; [ ! -f ${venv_q} ] || source ${venv_q}; exec ${command_q}"
+    inner="set -euo pipefail; cd ${src_q}; export EC_SESSION_ROOT=${root_q} EC_SESSION_WORKDIR=${workdir_q} EC_SESSION_OUTPUTS=${outputs_q}; export PYTHONPATH=${src_q}:${src_q}/src\${PYTHONPATH:+:\$PYTHONPATH}; if [ -f ${ecsh_q} ]; then source ${ecsh_q}; elif [ -f ${legacy_ecsh_q} ]; then source ${legacy_ecsh_q}; fi; [ ! -f ${venv_q} ] || source ${venv_q}; exec ${command_q}"
     remote_run srun --jobid "$JOB_ID" --overlap bash -lc "$inner"
 }
 
@@ -396,14 +407,15 @@ shell_session() {
     load_state
     ensure_active
 
-    local src_q ecsh_q venv_q root_q workdir_q outputs_q inner remote_command
+    local src_q ecsh_q legacy_ecsh_q venv_q root_q workdir_q outputs_q inner remote_command
     shell_quote "$REMOTE_SRC"; src_q="$REPLY"
-    shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/ergodic-claude.sh"; ecsh_q="$REPLY"
+    shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/ergodic-agent-workflows.sh"; ecsh_q="$REPLY"
+    shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/ergodic-claude.sh"; legacy_ecsh_q="$REPLY"
     shell_quote "${EC_SOFTWARE_ROOT}/${REMOTE_USER}/venvs/${REPO}/bin/activate"; venv_q="$REPLY"
     shell_quote "$REMOTE_ROOT"; root_q="$REPLY"
     shell_quote "$REMOTE_WORKDIR"; workdir_q="$REPLY"
     shell_quote "$REMOTE_OUTPUTS"; outputs_q="$REPLY"
-    inner="cd ${src_q}; export EC_SESSION_ROOT=${root_q} EC_SESSION_WORKDIR=${workdir_q} EC_SESSION_OUTPUTS=${outputs_q}; export PYTHONPATH=${src_q}:${src_q}/src\${PYTHONPATH:+:\$PYTHONPATH}; [ ! -f ${ecsh_q} ] || source ${ecsh_q}; [ ! -f ${venv_q} ] || source ${venv_q}; exec bash -i"
+    inner="cd ${src_q}; export EC_SESSION_ROOT=${root_q} EC_SESSION_WORKDIR=${workdir_q} EC_SESSION_OUTPUTS=${outputs_q}; export PYTHONPATH=${src_q}:${src_q}/src\${PYTHONPATH:+:\$PYTHONPATH}; if [ -f ${ecsh_q} ]; then source ${ecsh_q}; elif [ -f ${legacy_ecsh_q} ]; then source ${legacy_ecsh_q}; fi; [ ! -f ${venv_q} ] || source ${venv_q}; exec bash -i"
     quote_argv srun --jobid "$JOB_ID" --overlap --pty bash -lc "$inner"
     remote_command="$REPLY"
     ssh -tt "$EC_SSH_HOST" "$remote_command"

@@ -54,6 +54,7 @@ run_local_case() {
   HOME="$home" PATH="${STUBS}:$PATH" \
     "${REPO_ROOT}/scripts/bootstrap-local.sh" --agent "$agent" >/dev/null
 
+  assert_link "${home}/.ergodic-agent-workflows/ops"
   assert_link "${home}/.ergodic-claude/ops"
 
   case "$agent" in
@@ -101,6 +102,7 @@ for script in bootstrap-local.sh bootstrap-nersc.sh; do
       "${REPO_ROOT}/scripts/${script}" --agent gemini >/dev/null 2>&1; then
     fail "${script} accepted an invalid agent"
   fi
+  assert_missing "${INVALID_HOME}/.ergodic-agent-workflows"
   assert_missing "${INVALID_HOME}/.ergodic-claude"
   "${REPO_ROOT}/scripts/${script}" --help | grep -q -- '--agent claude|codex|both' \
     || fail "${script} help does not document the agent choices"
@@ -125,21 +127,26 @@ assert_missing "${BOTH_HOME}/.claude/skills/nersc-workflow"
 assert_missing "${BOTH_HOME}/.claude/skills/mlflow-query"
 assert_missing "${BOTH_HOME}/.claude/skills/adept-run"
 assert_missing "${BOTH_HOME}/.claude/scripts/ergodic"
-grep -Fq 'ergodic-claude nersc-agent-rules' "${BOTH_HOME}/.claude/CLAUDE.md" \
+grep -Fq 'ergodic-agent-workflows nersc-agent-rules' "${BOTH_HOME}/.claude/CLAUDE.md" \
   && fail "Claude rules block remained after uninstall"
 assert_link "${BOTH_HOME}/.codex/skills/nersc-workflow"
 assert_link "${BOTH_HOME}/.codex/scripts/ergodic"
 assert_file "${BOTH_HOME}/.codex/AGENTS.md"
+assert_link "${BOTH_HOME}/.ergodic-agent-workflows/ops"
 assert_link "${BOTH_HOME}/.ergodic-claude/ops"
 
 CLAUDE_HOME="${TEST_ROOT}/uninstall-claude-only"
 mkdir -p "$CLAUDE_HOME"
 HOME="$CLAUDE_HOME" PATH="${STUBS}:$PATH" \
   "${REPO_ROOT}/scripts/bootstrap-local.sh" --agent claude >/dev/null
+# Simulate the target written by a pre-rename bootstrap.
+rm "${CLAUDE_HOME}/.claude/scripts/ergodic"
+ln -s "${CLAUDE_HOME}/.ergodic-claude/ops" "${CLAUDE_HOME}/.claude/scripts/ergodic"
 HOME="$CLAUDE_HOME" PATH="${STUBS}:$PATH" \
   "${REPO_ROOT}/scripts/uninstall.sh" --agent claude >/dev/null
 assert_missing "${CLAUDE_HOME}/.claude/skills/nersc-workflow"
 assert_missing "${CLAUDE_HOME}/.claude/scripts/ergodic"
+assert_missing "${CLAUDE_HOME}/.ergodic-agent-workflows/ops"
 assert_missing "${CLAUDE_HOME}/.ergodic-claude/ops"
 HOME="$CLAUDE_HOME" PATH="${STUBS}:$PATH" \
   "${REPO_ROOT}/scripts/uninstall.sh" --agent claude >/dev/null
@@ -151,9 +158,30 @@ printf 'user content after\n' >> "$RULES_TARGET"
 "${REPO_ROOT}/scripts/install-agent-rules.sh" --remove --target "$RULES_TARGET" >/dev/null
 grep -Fq 'user content before' "$RULES_TARGET" || fail "rules removal lost preceding user content"
 grep -Fq 'user content after' "$RULES_TARGET" || fail "rules removal lost following user content"
-grep -Fq 'ergodic-claude nersc-agent-rules' "$RULES_TARGET" \
+grep -Fq 'ergodic-agent-workflows nersc-agent-rules' "$RULES_TARGET" \
   && fail "direct rules removal left the managed block behind"
 assert_file "${RULES_TARGET}.bak"
+
+LEGACY_RULES_TARGET="${TEST_ROOT}/legacy-rules-target.md"
+printf 'legacy user content\n' > "$LEGACY_RULES_TARGET"
+"${REPO_ROOT}/scripts/install-agent-rules.sh" --print \
+  | sed 's/ergodic-agent-workflows/ergodic-claude/g' >> "$LEGACY_RULES_TARGET"
+"${REPO_ROOT}/scripts/install-agent-rules.sh" --target "$LEGACY_RULES_TARGET" >/dev/null
+grep -Fq 'ergodic-agent-workflows nersc-agent-rules' "$LEGACY_RULES_TARGET" \
+  || fail "legacy rules block was not migrated"
+grep -Fq 'ergodic-claude nersc-agent-rules' "$LEGACY_RULES_TARGET" \
+  && fail "legacy rules marker remained after migration"
+grep -Fq 'legacy user content' "$LEGACY_RULES_TARGET" \
+  || fail "rules migration lost user content"
+
+LEGACY_CONFIG_HOME="${TEST_ROOT}/legacy-config"
+mkdir -p "${LEGACY_CONFIG_HOME}/.config/ergodic-claude"
+printf ': "${EC_ACCOUNT:=mlegacy}"\n' \
+  > "${LEGACY_CONFIG_HOME}/.config/ergodic-claude/config.sh"
+CONFIG_OUTPUT="$(HOME="$LEGACY_CONFIG_HOME" bash -c \
+  '. "'$REPO_ROOT'/scripts/ops/config.sh"; printf "%s|%s|%s" "$EC_ACCOUNT" "$EC_CONFIG" "$EC_CONFIG_SOURCE"')"
+[ "$CONFIG_OUTPUT" = "mlegacy|${LEGACY_CONFIG_HOME}/.config/ergodic-agent-workflows/config.sh|${LEGACY_CONFIG_HOME}/.config/ergodic-claude/config.sh" ] \
+  || fail "legacy config was not loaded through the new canonical config path: $CONFIG_OUTPUT"
 
 UNEXPECTED_HOME="${TEST_ROOT}/uninstall-unexpected-link"
 mkdir -p "${UNEXPECTED_HOME}/.claude/skills" "${TEST_ROOT}/user-owned-skill"

@@ -10,26 +10,26 @@ Manage the full cycle of syncing, running, monitoring, and iterating on Perlmutt
 
 ## Helper scripts (prefer these)
 
-These wrappers live at `~/.ergodic-claude/ops/` (symlinked by `bootstrap-local.sh`). They each wrap one known-safe `ssh perlmutter` invocation. **Always prefer the script over an inline `ssh perlmutter "…"` for these ops** — it makes the reviewed operation explicit and gives each agent a clear approval boundary.
+These wrappers live at `~/.ergodic-agent-workflows/ops/` (symlinked by `bootstrap-local.sh`). They each wrap one known-safe `ssh perlmutter` invocation. **Always prefer the script over an inline `ssh perlmutter "…"` for these ops** — it makes the reviewed operation explicit and gives each agent a clear approval boundary.
 
-`~/.ergodic-claude/ops/` is the canonical spelling and the one to use when writing a command. `bootstrap-local.sh` also leaves the selected agent's compatibility path (`~/.claude/scripts/ergodic/`, `~/.codex/scripts/ergodic/`, or both) pointing at it, so older transcripts and prompts keep working — but those paths are agent-specific. Don't reintroduce them in shared instructions.
+`~/.ergodic-agent-workflows/ops/` is the canonical spelling and the one to use when writing a command. `bootstrap-local.sh` also leaves the selected agent's compatibility path (`~/.claude/scripts/ergodic/`, `~/.codex/scripts/ergodic/`, or both) pointing at it, so older transcripts and prompts keep working — but those paths are agent-specific. Don't reintroduce them in shared instructions.
 
 | Need | Script |
 | --- | --- |
-| Isolated interactive edit–run–debug lease | `~/.ergodic-claude/ops/session.sh start|sync|exec|shell|status|stop` |
-| Sync cwd → `$PSCRATCH/<repo>/` | `~/.ergodic-claude/ops/sync-up.sh` |
-| Allocate interactive GPU (1 GPU) | `~/.ergodic-claude/ops/interactive-gpu.sh [hours] [nodes]` |
-| Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.ergodic-claude/ops/interactive-gpu-node.sh [hours] [nodes]` |
-| Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.ergodic-claude/ops/interactive-shared.sh [hours] [gpus]` |
-| Allocate interactive CPU node (1-4 nodes) | `~/.ergodic-claude/ops/interactive-cpu.sh [hours] [nodes]` |
-| Submit a batch job | `~/.ergodic-claude/ops/submit-batch.sh <sbatch-path>` |
-| Commit-pinned isolated run (checkout SHA → own dir → sbatch) | `~/.ergodic-claude/ops/launch-pinned.sh [opts] <cfg…>` |
-| List your jobs | `~/.ergodic-claude/ops/squeue.sh` |
-| Job accounting | `~/.ergodic-claude/ops/sacct.sh <jobid> [jobid2 ...]` |
-| Cancel one job (by id) | `~/.ergodic-claude/ops/scancel.sh <jobid>` |
-| Cat a remote log | `~/.ergodic-claude/ops/read-log.sh <relpath>` |
-| Grep a remote log | `~/.ergodic-claude/ops/grep-log.sh <pattern> <relpath>` |
-| Remote git SHA | `~/.ergodic-claude/ops/remote-sha.sh [subdir]` |
+| Isolated interactive edit–run–debug lease | `~/.ergodic-agent-workflows/ops/session.sh start|sync|exec|shell|status|stop` |
+| Sync cwd → `$PSCRATCH/<repo>/` | `~/.ergodic-agent-workflows/ops/sync-up.sh` |
+| Allocate interactive GPU (1 GPU) | `~/.ergodic-agent-workflows/ops/interactive-gpu.sh [hours] [nodes]` |
+| Allocate interactive GPU node (4 GPUs/node, 1-4 nodes) | `~/.ergodic-agent-workflows/ops/interactive-gpu-node.sh [hours] [nodes]` |
+| Allocate interactive shared GPU slice (1-2 GPUs, sub-node, shared_interactive QOS) | `~/.ergodic-agent-workflows/ops/interactive-shared.sh [hours] [gpus]` |
+| Allocate interactive CPU node (1-4 nodes) | `~/.ergodic-agent-workflows/ops/interactive-cpu.sh [hours] [nodes]` |
+| Submit a batch job | `~/.ergodic-agent-workflows/ops/submit-batch.sh <sbatch-path>` |
+| Commit-pinned isolated run (checkout SHA → own dir → sbatch) | `~/.ergodic-agent-workflows/ops/launch-pinned.sh [opts] <cfg…>` |
+| List your jobs | `~/.ergodic-agent-workflows/ops/squeue.sh` |
+| Job accounting | `~/.ergodic-agent-workflows/ops/sacct.sh <jobid> [jobid2 ...]` |
+| Cancel one job (by id) | `~/.ergodic-agent-workflows/ops/scancel.sh <jobid>` |
+| Cat a remote log | `~/.ergodic-agent-workflows/ops/read-log.sh <relpath>` |
+| Grep a remote log | `~/.ergodic-agent-workflows/ops/grep-log.sh <pattern> <relpath>` |
+| Remote git SHA | `~/.ergodic-agent-workflows/ops/remote-sha.sh [subdir]` |
 
 **Every `interactive-*.sh` takes hours first.** The second positional is whatever that
 allocator sizes with — nodes for the whole-node scripts, GPUs for the shared slice. All four
@@ -72,8 +72,8 @@ TIME_LIMIT  = 04:00:00                   # gpu_interactive MaxWall; verify with 
 > target first:
 >
 > ```bash
-> ssh perlmutter 'cat $ECLAUDE_VENVS/<repo>/lib/python*/site-packages/__editable__*<repo>*.pth 2>/dev/null || \
->                 cat $ECLAUDE_VENVS/<repo>/lib/python*/site-packages/_editable_impl_*<repo>*.pth'
+> ssh perlmutter 'cat $ERGODIC_VENVS/<repo>/lib/python*/site-packages/__editable__*<repo>*.pth 2>/dev/null || \
+>                 cat $ERGODIC_VENVS/<repo>/lib/python*/site-packages/_editable_impl_*<repo>*.pth'
 > ```
 
 > **Requiring `hbm80g` can mean waiting forever.** The 80 GB pool is ~250 nodes against ~1500
@@ -94,9 +94,9 @@ account decides which allocation gets billed. Resolve them at the start of any c
 needs them:
 
 ```bash
-ACCOUNT=$(~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT)          # e.g. m4490 — CPU jobs
-ACCOUNT_GPU=$(~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU)  # e.g. m4490_g — GPU jobs
-SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)         # /global/common/software/<project>
+ACCOUNT=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_ACCOUNT)          # e.g. m4490 — CPU jobs
+ACCOUNT_GPU=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_ACCOUNT_GPU)  # e.g. m4490_g — GPU jobs
+SW=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_SOFTWARE_ROOT)         # /global/common/software/<project>
 ```
 
 - `show-config.sh` with no argument prints everything that resolved (and where from) — run it
@@ -104,10 +104,10 @@ SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)         # /global/co
 - The `interactive-*.sh`, `submit-batch.sh`, and `launch-pinned.sh` helpers already do this
   themselves and **refuse to run with no account configured** rather than guessing. You only
   need the lines above for free-form `ssh perlmutter "salloc … / srun …"` commands.
-- If `EC_ACCOUNT` is empty: `~/.ergodic-claude/ops/list-accounts.sh` prints the projects
+- If `EC_ACCOUNT` is empty: `~/.ergodic-agent-workflows/ops/list-accounts.sh` prints the projects
   the user can actually charge (from SLURM's own associations), then the user picks one — via
   `./scripts/bootstrap-nersc.sh` or by writing `: "${EC_ACCOUNT:=<proj>}"` into
-  `~/.config/ergodic-claude/config.sh`. **Ask; never pick a project for them.**
+  `~/.config/ergodic-agent-workflows/config.sh`. **Ask; never pick a project for them.**
 - GPU work bills the `_g` account, CPU work the bare one. The project *directory* on global
   common is always the bare name.
 
@@ -156,7 +156,7 @@ command that scans the same ground.
 
 **Secrets stay in files.** Never put a token, password, or private key in a prompt, a
 command line, a commit, or a log. MLflow creds come from `~/.mlflow_credentials` (sourced by
-`ergodic-claude.sh`); the pinned-run deploy key comes from `~/.ssh/<repo>-deploy`. Read a
+`ergodic-agent-workflows.sh`); the pinned-run deploy key comes from `~/.ssh/<repo>-deploy`. Read a
 credential file only when diagnosing an auth failure, and never echo its contents.
 
 **You hold the user's own permissions**, and your project's allocation is shared with
@@ -174,7 +174,7 @@ Most projects need a Python venv on Perlmutter before `python -u` can run anythi
 
 ```bash
 REPO=$(basename "$PWD")
-SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)
+SW=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_SOFTWARE_ROOT)
 ssh perlmutter bash -lc "'
 set -euo pipefail
 VENV=\"${SW}/\$USER/venvs/${REPO}\"
@@ -225,7 +225,7 @@ reaches the user; the venvs just quietly cost 6× what they should.
 `bootstrap-nersc.sh` used to do exactly that — it set `UV_CACHE_DIR="${PSCRATCH}/uv-cache"`,
 reasoning that scratch is fast and purgeable. It is, but it is also the wrong filesystem,
 and that one line is what inflated every jax venv in the project. Fixed 2026-08-16; anyone
-whose `ergodic-claude.sh` predates that needs to re-run the bootstrap.
+whose `ergodic-agent-workflows.sh` predates that needs to re-run the bootstrap.
 
 For jax GPU venvs this is brutal, because the CUDA wheels dominate: `site-packages/nvidia`
 is **4.5 GB** of the ~6 GB (cudnn 1.3G, cublas 817M, cusolver 473M, cusparse 465M,
@@ -237,7 +237,7 @@ every member** — m4490 is capped at 100 GB across all users. One person's dupl
 wheels exhaust the quota for the whole team. `showquota` does **not** report this
 filesystem; the only signal is `Disk quota exceeded` on write.
 
-Check where the cache is pointing. `UV_CACHE_DIR` is exported from `ergodic-claude.sh`,
+Check where the cache is pointing. `UV_CACHE_DIR` is exported from `ergodic-agent-workflows.sh`,
 sourced from a managed block **prepended** to `~/.bashrc` and `~/.bash_profile`
 (since 2026-08-18). Older bootstraps wired it where non-interactive shells never saw
 it — first the Cori-era `~/.bash_profile.ext`, which nothing on Perlmutter sources,
@@ -251,7 +251,7 @@ ssh perlmutter bash -lc 'uv cache dir'
 ```
 
 If that is not under `$EC_SOFTWARE_ROOT/$USER/`, re-run the bootstrap — don't hand-edit
-`ergodic-claude.sh`, it is overwritten wholesale on every run:
+`ergodic-agent-workflows.sh`, it is overwritten wholesale on every run:
 
 ```bash
 ./scripts/bootstrap-nersc.sh
@@ -267,7 +267,7 @@ content only, which is required: the same wheel unpacked into different venvs ha
 mtimes. Dry-run first, and expect ~6–12 min for ~165k files:
 
 ```bash
-SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)
+SW=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_SOFTWARE_ROOT)
 ssh perlmutter "hardlink -c -n ${SW}/\$USER"   # dry run — prints "Saved: N GiB"
 ssh perlmutter "hardlink -c ${SW}/\$USER"      # for real
 ```
@@ -294,7 +294,7 @@ Notes for Claude:
   done:
   ```bash
   ssh perlmutter "srun --jobid=<JOBID> --overlap bash -lc '\
-    source \$ECLAUDE_VENVS/<repo>/bin/activate && \
+    source \$ERGODIC_VENVS/<repo>/bin/activate && \
     python -c \"import jax, jax.numpy as jnp; x=jnp.ones((256,256)); \
     print((x@x).sum(), jax.devices())\"'"
   ```
@@ -329,7 +329,7 @@ module upgrade. Dedupe the wheels instead; that recovers more, and keeps jax upg
 Destructive — confirm with the user first. Runs on login node.
 ```bash
 REPO=$(basename "$PWD")
-SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)
+SW=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_SOFTWARE_ROOT)
 ssh perlmutter "rm -rf ${SW}/\$USER/venvs/${REPO}"
 # then call "ensure venv exists" again
 ```
@@ -337,7 +337,7 @@ ssh perlmutter "rm -rf ${SW}/\$USER/venvs/${REPO}"
 ### Sync local to NERSC
 
 ```bash
-~/.ergodic-claude/ops/sync-up.sh
+~/.ergodic-agent-workflows/ops/sync-up.sh
 ```
 
 Stamps `.git_commit` (so the training script can log the SHA to MLflow) and rsyncs the cwd to `$PSCRATCH/<repo>/` with the standard exclusions (`__pycache__`, `.git`, `.venv`, `checkpoints/`, `runinfo/`, `workdir/`, `plots/`, `*.ipynb_checkpoints`, `uv.lock`). It never deletes remote-only files; use an intentional remote cleanup when a fresh development tree is needed.
@@ -351,17 +351,17 @@ and rerun without paying allocation startup latency each time. It owns one activ
 per local repo worktree:
 
 ```bash
-~/.ergodic-claude/ops/session.sh start --kind shared --hours 2 --gpus 1
-~/.ergodic-claude/ops/session.sh exec -- python run.py --cfg example
+~/.ergodic-agent-workflows/ops/session.sh start --kind shared --hours 2 --gpus 1
+~/.ergodic-agent-workflows/ops/session.sh exec -- python run.py --cfg example
 
 # after editing locally — a clean worktree is not required
-~/.ergodic-claude/ops/session.sh sync
-~/.ergodic-claude/ops/session.sh exec -- pytest tests/test_solver.py
+~/.ergodic-agent-workflows/ops/session.sh sync
+~/.ergodic-agent-workflows/ops/session.sh exec -- pytest tests/test_solver.py
 
 # a human or terminal-driven debugger can attach to the same allocation
-~/.ergodic-claude/ops/session.sh shell
-~/.ergodic-claude/ops/session.sh status
-~/.ergodic-claude/ops/session.sh stop
+~/.ergodic-agent-workflows/ops/session.sh shell
+~/.ergodic-agent-workflows/ops/session.sh status
+~/.ergodic-agent-workflows/ops/session.sh stop
 ```
 
 Kinds map to the existing interactive resource shapes:
@@ -437,7 +437,7 @@ Activation is PATH-only (sets `PATH`/`VIRTUAL_ENV`, no install/sync), so it fixe
 
 ```bash
 # from inside the repo on the laptop:
-~/.ergodic-claude/ops/launch-pinned.sh [options] <cfg1> [cfg2 ...]
+~/.ergodic-agent-workflows/ops/launch-pinned.sh [options] <cfg1> [cfg2 ...]
 #   <cfgN>       config path relative to repo root, WITHOUT .yaml
 #   --sha <sha>  commit to deploy (default: local HEAD; must be pushed)
 #   --nodes N    nodes per job (default 1)
@@ -488,14 +488,14 @@ Prefer `session.sh` for the normal agent-driven development loop. Use the comman
 when attaching to an allocation that predates the session helper or when a human explicitly
 wants to manage the allocation and remote working directory by hand.
 
-After allocating with `~/.ergodic-claude/ops/interactive-gpu.sh <hrs>` (which uses `salloc --no-shell` and prints `<JOBID>`):
+After allocating with `~/.ergodic-agent-workflows/ops/interactive-gpu.sh <hrs>` (which uses `salloc --no-shell` and prints `<JOBID>`):
 
 ```bash
 ssh -tt perlmutter "srun --jobid=<JOBID> --pty bash"
 # now on the compute node:
 cd $PSCRATCH/<repo>
-source ~/.bash_profile.ext                        # ergodic-claude.sh: MLflow env + creds, $ECLAUDE_VENVS
-source $ECLAUDE_VENVS/<repo>/bin/activate         # no hardcoded project dir — it comes from the env file
+source ~/.bash_profile.ext                        # ergodic-agent-workflows.sh: MLflow env + creds, $ERGODIC_VENVS
+source $ERGODIC_VENVS/<repo>/bin/activate         # no hardcoded project dir — it comes from the env file
 python run.py --cfg <config-path-no-yaml>         # or whatever the project's launch is
 ```
 
@@ -509,24 +509,24 @@ The allocation persists until its walltime expires or you `scancel` it — you c
 
 Allocate an interactive node and run training. Output is captured to a log on `$PSCRATCH/<repo>/workdir/` and the launch is detached on the login node so the user can monitor it (and so it survives the local session — see "Why the driver goes on a compute node" below).
 
-The launch sources `${SW}/$USER/ergodic-claude.sh` (installed by `bootstrap-nersc.sh`) to get MLflow env vars + credentials, then activates the project venv, then runs python. **No `uv` mutations happen here** — the venv was prepared on the login node by the previous step.
+The launch sources `${SW}/$USER/ergodic-agent-workflows.sh` (installed by `bootstrap-nersc.sh`) to get MLflow env vars + credentials, then activates the project venv, then runs python. **No `uv` mutations happen here** — the venv was prepared on the login node by the previous step.
 
 **`salloc` here must request `--gpus-per-node` explicitly — `--constraint=gpu` alone is not enough.** Slurm draws GPU device visibility at two different levels: the **job** (the `salloc` allocation itself) and the **step** (each `srun` invocation run inside it), and GRES bound to one isn't automatically bound to the other. A plain interactive `salloc` shell — run *without* `--no-shell` and with no `srun` wrapping your command — executes your commands at the job level and sees all 4 GPUs on an exclusive node with no extra flag, since there's no separate step boundary involved. But the one-shot `salloc ... srun bash -c '...'` commands below run your training command as an `srun` **job step** (every launch path in this skill goes through `srun`), and Slurm builds a step's GPU device cgroup from the GRES requested *for that step*, not from the node's exclusivity. `--constraint=gpu` only steers node *selection* — it requests no GRES at all — so without `--gpus-per-node`, the step gets `CUDA_ERROR_NO_DEVICE` even though `squeue`/`AllocTRES` shows the node's A100s allocated to the job. `interactive-gpu.sh`/`interactive-gpu-node.sh` already pass `--gpus-per-node ${EC_GPUS_PER_NODE}` for the same reason — the one-shot commands below build their own `salloc` call directly, so they need the flag too.
 
 **Single node (default):**
 ```bash
 REPO=$(basename "$PWD")
-SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)
-ACCOUNT_GPU=$(~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU)
-ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc --nodes=1 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-train.log 2>&1 < /dev/null &"
+SW=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_SOFTWARE_ROOT)
+ACCOUNT_GPU=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_ACCOUNT_GPU)
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc --nodes=1 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun bash -c 'source ${SW}/\$USER/ergodic-agent-workflows.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-train.log 2>&1 < /dev/null &"
 ```
 
 **Multi-node (only if the workload genuinely needs >1 node):**
 ```bash
 REPO=$(basename "$PWD")
-SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)
-ACCOUNT_GPU=$(~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU)
-ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun --overlap --nodes=1 --ntasks=1 bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-train.log 2>&1 < /dev/null &"
+SW=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_SOFTWARE_ROOT)
+ACCOUNT_GPU=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_ACCOUNT_GPU)
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc --nodes=4 --gpus-per-node=4 --qos=interactive --time=01:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --job-name=${REPO}-train srun --overlap --nodes=1 --ntasks=1 bash -c 'source ${SW}/\$USER/ergodic-agent-workflows.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-train.log 2>&1 < /dev/null &"
 ```
 
 **IMPORTANT: multi-node wraps the driver in exactly `srun --overlap --nodes=1 --ntasks=1` — not a plain `srun`.** A plain outer `srun` (no flags) runs the command as an N-node job step and conflicts with the internal `srun --overlap` that torchrun-style frameworks use to place workers (interconnect errors). The `--overlap --nodes=1 --ntasks=1` form instead runs the *driver* as a 1-task step on the head compute node, and the framework's internal worker srun still lays out across all nodes with full GPU pinning. Verified 2026-07-03 (Perlmutter, parsl HTEX + SrunLauncher): driver step `.0` on the head node, worker step `.1` spanning all nodes, workers GPU-pinned on every node, and a 1.5 h 8-run production scan completed with results byte-identical to its login-driver baseline.
@@ -576,7 +576,7 @@ ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid salloc
 > ```bash
 > # interactive: allocate, then drive from the login node
 > REPO=$(basename "$PWD")            # from a worktree, set this to the real repo name — see Conventions
-> ACCOUNT_GPU=$(~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU)
+> ACCOUNT_GPU=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_ACCOUNT_GPU)
 > alloc=$(ssh perlmutter "salloc --nodes=4 --gpus-per-node=4 --qos=interactive \
 >   --time=04:00:00 --constraint=gpu --account=${ACCOUNT_GPU} --no-shell" 2>&1)
 > JOBID=$(printf '%s\n' "$alloc" | grep -oE 'Granted job allocation [0-9]+' | grep -oE '[0-9]+$')
@@ -610,12 +610,12 @@ This is an **alternative** to detaching the multi-node one-shot, not a replaceme
 Copy the template `skills/nersc-workflow/run-scan.sbatch` into the campaign next to its `scan.py`, set `DRIVER`, then submit + monitor:
 
 ```bash
-~/.ergodic-claude/ops/submit-batch.sh sims/<campaign>/run-scan.sbatch
-~/.ergodic-claude/ops/squeue.sh
-~/.ergodic-claude/ops/read-log.sh workdir/<repo>-<jobid>.out
+~/.ergodic-agent-workflows/ops/submit-batch.sh sims/<campaign>/run-scan.sbatch
+~/.ergodic-agent-workflows/ops/squeue.sh
+~/.ergodic-agent-workflows/ops/read-log.sh workdir/<repo>-<jobid>.out
 ```
 
-The template hardcodes `--qos=regular` (the interactive QOS rejects sbatch — see above), `--nodes=4 --gpus-per-node=4`, and `--output=workdir/%x-%j.out` (`workdir/` is excluded from `sync-up`). `submit-batch.sh` does `mkdir -p workdir` first so the log can open. It deliberately carries **no** `--account` and **no** hardcoded venv path: `submit-batch.sh` passes `-A $EC_ACCOUNT_GPU` on the command line (which overrides any `#SBATCH --account`), and the script resolves the venv through `$ECLAUDE_VENVS`. Pass `submit-batch.sh --account <acct>` for a CPU-only job.
+The template hardcodes `--qos=regular` (the interactive QOS rejects sbatch — see above), `--nodes=4 --gpus-per-node=4`, and `--output=workdir/%x-%j.out` (`workdir/` is excluded from `sync-up`). `submit-batch.sh` does `mkdir -p workdir` first so the log can open. It deliberately carries **no** `--account` and **no** hardcoded venv path: `submit-batch.sh` passes `-A $EC_ACCOUNT_GPU` on the command line (which overrides any `#SBATCH --account`), and the script resolves the venv through `$ERGODIC_VENVS`. Pass `submit-batch.sh --account <acct>` for a CPU-only job.
 
 **Detach vs sbatch — both stay fully inspectable** (`squeue` / `sacct` / `read-log` / `srun --jobid=<id> --overlap` attach all work either way):
 
@@ -644,12 +644,12 @@ Measured 2026-08-11: `gpu_interactive` = 4 h wall, **4 nodes per job**, **2 subm
 **Running on a parked allocation (e.g. an `interactive-shared.sh` slice):** the `interactive-*.sh` scripts use `salloc --no-shell`, which leaves the allocation sitting in the queue. To run on it, read its job id from `squeue` and `srun --jobid=<id> --overlap` into it — **do not** issue a fresh `salloc` (that allocates a *second* node and bypasses the shared slice you just reserved).
 ```bash
 REPO=$(basename "$PWD")
-SW=$(~/.ergodic-claude/ops/show-config.sh EC_SOFTWARE_ROOT)
+SW=$(~/.ergodic-agent-workflows/ops/show-config.sh EC_SOFTWARE_ROOT)
 JOBID=<id from squeue>
-ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid srun --jobid=${JOBID} --overlap bash -c 'source ${SW}/\$USER/ergodic-claude.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-${JOBID}.log 2>&1 < /dev/null &"
+ssh perlmutter "cd \$PSCRATCH/${REPO} && mkdir -p workdir && nohup setsid srun --jobid=${JOBID} --overlap bash -c 'source ${SW}/\$USER/ergodic-agent-workflows.sh && source ${SW}/\$USER/venvs/${REPO}/bin/activate && cd \$PSCRATCH/${REPO} && python -u train.py' > \$PSCRATCH/${REPO}/workdir/${REPO}-${JOBID}.log 2>&1 < /dev/null &"
 ```
 
-Detach it the same way as the one-shot (remote `nohup setsid`, log on `workdir/`): a parked allocation is owned by SLURM with no client anywhere, so a dead attach client only costs the current *step* — the allocation survives and you re-attach (make the driver idempotent, e.g. a `--skip-done` flag, so a re-attach resumes instead of duplicating). To bill a different project than your configured one for a single launch, prefix the allocator with `EC_ACCOUNT=<account>` (e.g. `EC_ACCOUNT=m4490 interactive-gpu-node.sh 3 2`) — env vars override `~/.config/ergodic-claude/config.sh`, and salloc rejects on node-hour balance if the resolved account can't pay.
+Detach it the same way as the one-shot (remote `nohup setsid`, log on `workdir/`): a parked allocation is owned by SLURM with no client anywhere, so a dead attach client only costs the current *step* — the allocation survives and you re-attach (make the driver idempotent, e.g. a `--skip-done` flag, so a re-attach resumes instead of duplicating). To bill a different project than your configured one for a single launch, prefix the allocator with `EC_ACCOUNT=<account>` (e.g. `EC_ACCOUNT=m4490 interactive-gpu-node.sh 3 2`) — env vars override `~/.config/ergodic-agent-workflows/config.sh`, and salloc rejects on node-hour balance if the resolved account can't pay.
 
 **MULTI-NODE parsl: do not launch the driver into a parked allocation this way at all.** With the canonical one-block-per-node config (`nodes_per_block=1, max_blocks=nodes` — what every parsl config in these skills now uses) the driver must not occupy a job step: drive it from the **login node** per the EXCEPTION above, and everything below never arises.
 
@@ -663,7 +663,7 @@ plus explicit node count in the launcher overrides (`SrunLauncher(overrides=f"--
 
 Notes:
 - `python -u` for unbuffered output (so `tail -f` of the log is responsive).
-- `ergodic-claude.sh` provides `MLFLOW_TRACKING_URI` and (via `~/.mlflow_credentials`) `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`. If those are empty, the user hasn't filled in their credentials yet — point them at `vim ~/.mlflow_credentials` on Perlmutter.
+- `ergodic-agent-workflows.sh` provides `MLFLOW_TRACKING_URI` and (via `~/.mlflow_credentials`) `MLFLOW_TRACKING_USERNAME` / `MLFLOW_TRACKING_PASSWORD`. If those are empty, the user hasn't filled in their credentials yet — point them at `vim ~/.mlflow_credentials` on Perlmutter.
 - For adept (the usual case), the entry point should be `run.py --cfg <name>` (single run) or a parsl scan script — see the `adept-run` skill for which to use. Don't substitute the launch command without checking. On a compute node run it as `python run.py …` after activating the venv, not `uv run` — that is what the recipes above do, and why.
 - The `--time=01:00:00` in the one-shot launches above is a polite default, **not** the cap: `gpu_interactive` allows 4 h (and 4 nodes, 2 submitted jobs — measured 2026-08-11, re-check with `sacctmgr -nP show qos gpu_interactive format=MaxWall,MaxTRESPerJob,MaxSubmitJobsPU`). Past 4 h, switch to `--qos=regular`.
 
@@ -672,17 +672,17 @@ Notes:
 **Run log (training stdout — lives on `$PSCRATCH/<repo>/workdir/`, not locally).** The name depends on which launch path you used: one-shot → `<repo>-train.log`, parked attach → `<repo>-<jobid>.log`, parsl scan → `scan.log` / `scan-<jobid>.log`, sbatch → `<repo>-<jobid>.out`. List first if you're not sure, then read:
 ```bash
 ssh perlmutter 'ls -t $PSCRATCH/'"$(basename "$PWD")"'/workdir/'
-~/.ergodic-claude/ops/read-log.sh workdir/$(basename "$PWD")-train.log
+~/.ergodic-agent-workflows/ops/read-log.sh workdir/$(basename "$PWD")-train.log
 ```
 
 **SLURM queue:**
 ```bash
-~/.ergodic-claude/ops/squeue.sh
+~/.ergodic-agent-workflows/ops/squeue.sh
 ```
 
 **Job accounting (state, exit code, elapsed):**
 ```bash
-~/.ergodic-claude/ops/sacct.sh <jobid>
+~/.ergodic-agent-workflows/ops/sacct.sh <jobid>
 ```
 
 **Remote outputs (free-form `ls` — not covered by a script):**
@@ -692,8 +692,8 @@ ssh perlmutter "ls -la \$PSCRATCH/$(basename "$PWD")/checkpoints/ 2>/dev/null"
 
 **Read / grep a remote log file:**
 ```bash
-~/.ergodic-claude/ops/read-log.sh slurm-<jobid>.out
-~/.ergodic-claude/ops/grep-log.sh 'error\|fail' slurm-<jobid>.out
+~/.ergodic-agent-workflows/ops/read-log.sh slurm-<jobid>.out
+~/.ergodic-agent-workflows/ops/grep-log.sh 'error\|fail' slurm-<jobid>.out
 ```
 
 For MLflow metrics, switch to the `mlflow-query` skill.
@@ -718,8 +718,8 @@ rsync -avz "perlmutter:${REMOTE_SCRATCH}/${REPO}/plots/"       ./plots/
 Identify the job id first, then cancel by id. **Never blanket-cancel by name or by user** — teammates and other concurrent jobs share the account.
 
 ```bash
-~/.ergodic-claude/ops/squeue.sh
-~/.ergodic-claude/ops/scancel.sh <JOB_ID>
+~/.ergodic-agent-workflows/ops/squeue.sh
+~/.ergodic-agent-workflows/ops/scancel.sh <JOB_ID>
 ```
 
 Under the remote-detached pattern there is no local process to clean up — `scancel` the job id and the login-node salloc client exits on its own. (Only if you used the legacy locally-detached form: `kill $(pgrep -f "ssh.*perlmutter.*salloc.*$(basename "$PWD")")`.)
@@ -748,7 +748,7 @@ the machine rather than against plausibility:
 | The QOS's walltime cap fits the run | `ssh perlmutter "sacctmgr -nP show qos format=Name,MaxWall,MaxTRES where name=interactive,regular,shared_interactive"` |
 | That `sbatch`/`srun` flag exists (models invent flags) | `ssh perlmutter "srun --help \| grep -- --overlap"` |
 | The module name/version exists here | `ssh perlmutter "module spider <name>"` |
-| GPUs were actually bound to the step, not just the job | `~/.ergodic-claude/ops/sacct.sh <jobid>` → `AllocTRES` shows `gres/gpu=N`; in-job, `nvidia-smi -L` or `python -c "import jax; print(jax.devices())"` |
+| GPUs were actually bound to the step, not just the job | `~/.ergodic-agent-workflows/ops/sacct.sh <jobid>` → `AllocTRES` shows `gres/gpu=N`; in-job, `nvidia-smi -L` or `python -c "import jax; print(jax.devices())"` |
 | The job really finished | `sacct.sh <jobid>` → `State=COMPLETED`, `ExitCode=0:0` — a quiet log is not evidence |
 | How many nodes the code thinks it has | see the `SLURM_*` trap below — do not read `$SLURM_NNODES` from inside a step |
 | The QOS will even accept another job | `sacctmgr -nP show qos gpu_interactive format=MaxSubmitJobsPU` — interactive is 2 |
