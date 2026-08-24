@@ -1,6 +1,10 @@
-# ergodic-claude
+# ergodic-agent-workflows
 
-The Ergodic workflow for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) and [Codex](https://developers.openai.com/codex/) — a small set of shared skills, scripts, and an example that wires either coding agent up to the team's NERSC (Perlmutter) compute and MLflow tracking server.
+Harness-neutral agent workflows for Ergodic: a small set of shared skills, scripts, and an
+example that wires supported coding agents into the team's NERSC (Perlmutter) compute and
+MLflow tracking server. It currently supports
+[Claude Code](https://docs.claude.com/en/docs/claude-code/overview) and
+[Codex](https://developers.openai.com/codex/).
 
 After installing this once, you can run Claude Code or Codex from any project repo on your laptop and ask things like:
 
@@ -21,11 +25,11 @@ After installing this once, you can run Claude Code or Codex from any project re
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
-| `scripts/ops/` | Thin wrappers around reviewed NERSC operations, including isolated interactive development sessions, allocation, sync, job monitoring, and MLflow artifact access. Bootstrap symlinks these to `~/.ergodic-claude/ops/`, an agent-neutral stable path |
+| `scripts/ops/` | Thin wrappers around reviewed NERSC operations, including isolated interactive development sessions, allocation, sync, job monitoring, and MLflow artifact access. Bootstrap symlinks these to `~/.ergodic-agent-workflows/ops/`, an agent-neutral stable path |
 | `rules/nersc-agent-rules.md` | NERSC's [required coding-agent rules](https://docs.nersc.gov/development/coding-agents/) — bounded filesystem search, secrets handling, agent conduct on shared systems |
 | `scripts/install-agent-rules.sh` | Installs that block into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, or both between managed markers (idempotent; backs up first) |
-| `~/.config/ergodic-claude/config.sh` | **Your** settings — which NERSC project to bill. Written by `bootstrap-nersc.sh`, outside the repo. `scripts/ops/show-config.sh` prints what resolved; `list-accounts.sh` lists the projects you can charge |
-| `scripts/bootstrap-local.sh` | Installs `uv`, links shared skills for the selected agent(s), links ops scripts into `~/.ergodic-claude/ops/`, installs the NERSC agent rules, checks ssh |
+| `~/.config/ergodic-agent-workflows/config.sh` | **Your** settings — which NERSC project to bill. Written by `bootstrap-nersc.sh`, outside the repo. `scripts/ops/show-config.sh` prints what resolved; `list-accounts.sh` lists the projects you can charge |
+| `scripts/bootstrap-local.sh` | Installs `uv`, links shared skills for the selected agent(s), links ops scripts into `~/.ergodic-agent-workflows/ops/`, installs the NERSC agent rules, checks ssh |
 | `scripts/bootstrap-nersc.sh` | Installs `uv` on Perlmutter, creates the venv and scratch directories the skill expects, and installs rules for the selected agent(s) there too |
 | `scripts/uninstall.sh` | Removes the selected agent's bootstrap-managed local links and rules; `--nersc` also removes its managed rules on Perlmutter |
 | `examples/first-run/` | A ~30-second torch training job that exercises the entire loop |
@@ -46,12 +50,21 @@ You need three things before installing:
 ## Install
 
 ```bash
-git clone https://github.com/ergodicio/ergodic-claude.git
-cd ergodic-claude
+git clone https://github.com/ergodicio/ergodic-agent-workflows.git
+cd ergodic-agent-workflows
 agent=codex  # claude, codex, or both
 ./scripts/bootstrap-local.sh --agent "$agent"
 ./scripts/bootstrap-nersc.sh --agent "$agent"
 ```
+
+### Upgrading from `ergodic-claude`
+
+The bootstrap makes `~/.ergodic-agent-workflows/ops/` and
+`~/.config/ergodic-agent-workflows/config.sh` canonical. Existing installations continue
+to work: it keeps `~/.ergodic-claude/ops/` as a compatibility link, migrates the managed
+agent-rule and shell-profile blocks, honors the old config file as a fallback, and exports
+`ECLAUDE_VENVS` as an alias of `ERGODIC_VENVS`. Re-run both bootstrap scripts once after
+updating your checkout to install the new paths.
 
 Use `--agent claude`, `--agent codex`, or `--agent both` with both scripts. The default is
 `both`, so existing no-argument installs keep working. A single-agent install only creates
@@ -72,7 +85,7 @@ the bootstrap scripts.
 
 The uninstaller only removes symlinks whose targets exactly match the checkout it is run
 from and rules inside the managed markers. It leaves user-owned files, unexpected symlinks,
-and backups untouched. The shared `~/.ergodic-claude/ops` link stays in place while another
+and backups untouched. The shared `~/.ergodic-agent-workflows/ops` link stays in place while another
 installed agent still uses it.
 
 `bootstrap-nersc.sh` will have created `~/.mlflow_credentials` on Perlmutter with placeholder values. Fill it in:
@@ -93,7 +106,7 @@ export MLFLOW_TRACKING_PASSWORD=<your-token>
 ```
 
 Most scripts are narrow wrappers around one reviewed operation and can be approved
-individually. Do not blanket-allow `~/.ergodic-claude/ops/*`: `session.sh exec` and
+individually. Do not blanket-allow `~/.ergodic-agent-workflows/ops/*`: `session.sh exec` and
 `session.sh shell` deliberately provide arbitrary execution inside the current interactive
 allocation. Treat starting and using that time-bounded lease as an explicit approval;
 free-form `ssh perlmutter "…"` remains a separate decision.
@@ -103,16 +116,16 @@ free-form `ssh perlmutter "…"` remains a separate decision.
 For the fast edit–run–debug loop, create one persistent, isolated allocation and reuse it:
 
 ```bash
-~/.ergodic-claude/ops/session.sh start --kind shared --hours 2 --gpus 1
-~/.ergodic-claude/ops/session.sh exec -- python run.py --cfg example
+~/.ergodic-agent-workflows/ops/session.sh start --kind shared --hours 2 --gpus 1
+~/.ergodic-agent-workflows/ops/session.sh exec -- python run.py --cfg example
 
 # edit locally, including uncommitted changes, then refresh the same node
-~/.ergodic-claude/ops/session.sh sync
-~/.ergodic-claude/ops/session.sh exec -- pytest tests/test_solver.py
+~/.ergodic-agent-workflows/ops/session.sh sync
+~/.ergodic-agent-workflows/ops/session.sh exec -- pytest tests/test_solver.py
 
 # use a real terminal when needed
-~/.ergodic-claude/ops/session.sh shell
-~/.ergodic-claude/ops/session.sh stop
+~/.ergodic-agent-workflows/ops/session.sh shell
+~/.ergodic-agent-workflows/ops/session.sh stop
 ```
 
 `--kind shared` is the quick 1–2 GPU path. `--kind gpu --nodes N` requests whole GPU
@@ -162,9 +175,9 @@ scripts do that for you: `scripts/install-agent-rules.sh` copies the block from
 according to `--agent`, on your laptop **and** on Perlmutter, delimited by markers:
 
 ```
-<!-- >>> ergodic-claude nersc-agent-rules >>> -->
+<!-- >>> ergodic-agent-workflows nersc-agent-rules >>> -->
 …
-<!-- <<< ergodic-claude nersc-agent-rules <<< -->
+<!-- <<< ergodic-agent-workflows nersc-agent-rules <<< -->
 ```
 
 Nothing outside those markers is touched, the file is backed up to `CLAUDE.md.bak` before
@@ -196,7 +209,7 @@ The `nersc-workflow` skill assumes:
 | Code (synced from your laptop) | `$PSCRATCH/<repo>/` |
 | Interactive session | `$PSCRATCH/<repo>-sessions/<session-id>/{src,workdir,outputs}` |
 | Run outputs (checkpoints, plots, logs) | inside that same `$PSCRATCH/<repo>/` |
-| uv venv | `$SW/$USER/venvs/<repo>` (also `$ECLAUDE_VENVS/<repo>` on Perlmutter) |
+| uv venv | `$SW/$USER/venvs/<repo>` (also `$ERGODIC_VENVS/<repo>` on Perlmutter) |
 | uv-managed Pythons | `$SW/$USER/uv-python/` |
 | uv cache | `$PSCRATCH/uv-cache/` |
 | MLflow credentials | `~/.mlflow_credentials` (mode 600 — fill in after running `bootstrap-nersc.sh`) |
@@ -214,7 +227,7 @@ Note this cuts against the "keep agent writes in `$HOME`/`$SCRATCH`" line on NER
 
 NERSC users usually belong to several projects, so nothing in this repo defaults to one.
 `bootstrap-nersc.sh` reads your SLURM associations, asks which project to use if there's more
-than one, and writes `~/.config/ergodic-claude/config.sh`:
+than one, and writes `~/.config/ergodic-agent-workflows/config.sh`:
 
 ```bash
 : "${EC_ACCOUNT:=m4490}"
@@ -262,7 +275,7 @@ If your project has different conventions (multi-node, non-interactive QOS, diff
 ## Updating
 
 ```bash
-cd path/to/ergodic-claude
+cd path/to/ergodic-agent-workflows
 git pull
 ./scripts/bootstrap-local.sh --agent codex    # safe to re-run; use your original selection
 ```

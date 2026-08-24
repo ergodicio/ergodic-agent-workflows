@@ -24,7 +24,7 @@ fi
 
 cat >&2 <<EOF
 
-[ergodic-claude] ssh to '$EC_SSH_HOST' is not working.
+[ergodic-agent-workflows] ssh to '$EC_SSH_HOST' is not working.
 
 Likely causes:
   1. The '$EC_SSH_HOST' alias is missing from ~/.ssh/config.

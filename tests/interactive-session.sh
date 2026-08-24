@@ -96,7 +96,7 @@ SESSION=(
 assert_contains "$RSYNC_LOG" '--delete-delay'
 assert_contains "$RSYNC_LOG" '/example-repo-sessions/'
 assert_contains "$RSYNC_LOG" '/src/'
-assert_contains "$MARKER_STORE" 'ergodic-claude-session-v1'
+assert_contains "$MARKER_STORE" 'ergodic-agent-workflows-session-v1'
 assert_contains "$MARKER_STORE" 'repo=example-repo'
 
 STATE_FILE="$(find "${TEST_ROOT}/state" -type f -name '*.state' -print -quit)"
@@ -105,6 +105,9 @@ assert_contains "$STATE_FILE" $'job_id\t424242'
 assert_contains "$STATE_FILE" $'dirty\ttrue'
 FINGERPRINT_BEFORE="$(awk -F '\t' '$1 == "workspace_fingerprint" {print $2}' "$STATE_FILE")"
 printf 'second dirty change\n' >> "${WORKTREE}/new-config.yaml"
+# A session created before the rename must remain usable.
+sed 's/ergodic-agent-workflows/ergodic-claude/' "$MARKER_STORE" > "${MARKER_STORE}.tmp"
+mv "${MARKER_STORE}.tmp" "$MARKER_STORE"
 
 (
     cd "$WORKTREE"

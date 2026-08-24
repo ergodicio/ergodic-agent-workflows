@@ -255,8 +255,8 @@ def worker_init(repo: str) -> str:
     """Shell that runs in each worker before any app.
 
     Note what is NOT here: the MLflow token. Sourcing ~/.bash_profile.ext pulls
-    ergodic-claude.sh, which reads ~/.mlflow_credentials (mode 600) on the compute node
-    and exports $ECLAUDE_VENVS. f-string'ing os.environ["MLFLOW_TRACKING_PASSWORD"] into
+    ergodic-agent-workflows.sh, which reads ~/.mlflow_credentials (mode 600) on the compute node
+    and exports $ERGODIC_VENVS. f-string'ing os.environ["MLFLOW_TRACKING_PASSWORD"] into
     worker_init instead — as older scan scripts do — writes your token in cleartext into
     parsl's generated block scripts under runinfo/ on scratch, where it persists and syncs.
     Source the credential file; never interpolate the secret.
@@ -264,7 +264,7 @@ def worker_init(repo: str) -> str:
     return "; ".join(
         [
             "source $HOME/.bash_profile.ext",
-            f'source "$ECLAUDE_VENVS/{repo}/bin/activate"',
+            f'source "$ERGODIC_VENVS/{repo}/bin/activate"',
             f'export PYTHONPATH="$PYTHONPATH:$PSCRATCH/{repo}"',
             "export BASE_TEMPDIR=$PSCRATCH/tmp/",
             "module unload cudatoolkit",             # jax ships its own CUDA; the module conflicts
@@ -470,7 +470,7 @@ single_thread = (
     "export JAX_PLATFORMS=cpu; "
     "export OMP_NUM_THREADS=1; export MKL_NUM_THREADS=1; export OPENBLAS_NUM_THREADS=1; "
     'export XLA_FLAGS="--xla_cpu_multi_thread_eigen=false"; '
-    "source $ECLAUDE_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
+    "source $ERGODIC_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
 )
 
 Config(executors=[HighThroughputExecutor(
@@ -500,7 +500,7 @@ the rest idle. For a genuine multi-node scan use the `SrunLauncher` config above
 
 ```bash
 # 2 h, 1 node; prints a squeue line — take the JOBID from it. You are left on a login node.
-~/.ergodic-claude/ops/interactive-cpu.sh 2 1
+~/.ergodic-agent-workflows/ops/interactive-cpu.sh 2 1
 ssh perlmutter "cd \$PSCRATCH/<repo> && mkdir -p workdir && nohup setsid srun --overlap \
     --jobid=<JOBID> -N1 -n1 -c 256 --cpu-bind=none bash -lc '<activate…> \
     taskset -c 0-127 python -u scripts/<scan>.py --n_workers 128' \
@@ -573,7 +573,7 @@ itself, and XLA picks up the mask on its own:
 ```python
 fat_workers = (
     "export JAX_PLATFORMS=cpu; "                # no OMP_NUM_THREADS, no multi_thread_eigen=false
-    "source $ECLAUDE_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
+    "source $ERGODIC_VENVS/<repo>/bin/activate; cd $PSCRATCH/<repo>"
 )
 
 Config(executors=[HighThroughputExecutor(
@@ -596,7 +596,7 @@ falling.
 Scaling past one node does **not** require `SlurmProvider` — use the multi-node
 `LocalProvider` config above inside an N-node allocation. Reach for `SlurmProvider` only when
 the scan itself should submit and own its jobs (and then don't hardcode the account: read it
-from `~/.ergodic-claude/ops/show-config.sh EC_ACCOUNT_GPU`).
+from `~/.ergodic-agent-workflows/ops/show-config.sh EC_ACCOUNT_GPU`).
 
 ### Sizing a scan: measure ms/step, don't read MLflow durations
 
