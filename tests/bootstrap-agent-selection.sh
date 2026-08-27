@@ -62,6 +62,7 @@ run_local_case() {
       assert_link "${home}/.claude/skills/nersc-workflow"
       assert_link "${home}/.claude/skills/mlflow-query"
       assert_link "${home}/.claude/skills/adept-run"
+      assert_link "${home}/.claude/skills/research-notes"
       assert_link "${home}/.claude/scripts/ergodic"
       assert_file "${home}/.claude/CLAUDE.md"
       ;;
@@ -75,6 +76,7 @@ run_local_case() {
       assert_link "${home}/.codex/skills/nersc-workflow"
       assert_link "${home}/.codex/skills/mlflow-query"
       assert_link "${home}/.codex/skills/adept-run"
+      assert_link "${home}/.codex/skills/research-notes"
       assert_link "${home}/.codex/scripts/ergodic"
       assert_file "${home}/.codex/AGENTS.md"
       ;;
@@ -126,6 +128,7 @@ HOME="$BOTH_HOME" PATH="${STUBS}:$PATH" \
 assert_missing "${BOTH_HOME}/.claude/skills/nersc-workflow"
 assert_missing "${BOTH_HOME}/.claude/skills/mlflow-query"
 assert_missing "${BOTH_HOME}/.claude/skills/adept-run"
+assert_missing "${BOTH_HOME}/.claude/skills/research-notes"
 assert_missing "${BOTH_HOME}/.claude/scripts/ergodic"
 grep -Fq 'ergodic-agent-workflows nersc-agent-rules' "${BOTH_HOME}/.claude/CLAUDE.md" \
   && fail "Claude rules block remained after uninstall"

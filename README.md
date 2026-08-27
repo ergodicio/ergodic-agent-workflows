@@ -25,6 +25,7 @@ After installing this once, you can run Claude Code or Codex from any project re
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
+| `skills/research-notes/` | Skill that maintains append-only `NOTES.md` research notebooks with simulation provenance, failed paths, findings, and decisions; includes union-merge setup for concurrent branches |
 | `scripts/ops/` | Thin wrappers around reviewed NERSC operations, including isolated interactive development sessions, allocation, sync, job monitoring, and MLflow artifact access. Bootstrap symlinks these to `~/.ergodic-agent-workflows/ops/`, an agent-neutral stable path |
 | `rules/nersc-agent-rules.md` | NERSC's [required coding-agent rules](https://docs.nersc.gov/development/coding-agents/) — bounded filesystem search, secrets handling, agent conduct on shared systems |
 | `scripts/install-agent-rules.sh` | Installs that block into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, or both between managed markers (idempotent; backs up first) |
@@ -161,7 +162,12 @@ long-queue runs instead use commit-pinned batch paths, with logs kept on scratch
 
 When you ask "how's the run going", the agent reads `mlflow-query/SKILL.md`, uses `uv run python3` to hit the tracking server, and summarizes recent runs + loss history.
 
-The two skills don't know about each other directly — the agent composes them.
+The skills don't know about each other directly — the agent composes them. During a
+research campaign, `research-notes` first recovers the relevant notebook context and then
+appends durable checkpoints for launches, failures, findings, corrections, and decisions.
+Its repository helper configures Git's union merge driver for root and nested `NOTES.md`
+files, so concurrent append-only entries are preserved instead of becoming routine merge
+conflicts.
 
 ---
 
