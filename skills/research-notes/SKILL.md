@@ -1,6 +1,6 @@
 ---
 name: research-notes
-description: Maintain append-only NOTES.md lab notebooks for scientific simulations, experiments, numerical investigations, and multi-session research decisions. Use when starting, continuing, running, debugging, or concluding research work whose hypotheses, provenance, failures, results, or interpretations should persist across sessions; do not use for routine code maintenance with no research record.
+description: Maintain append-only research notebooks with reproducible checkpoints and, when configured, mirror them to uniquely named notes in a shared Obsidian vault. Use for scientific simulations, experiments, numerical investigations, and multi-session research decisions; do not use for routine code maintenance with no research record.
 ---
 
 # Research Notes
@@ -9,6 +9,11 @@ Treat the relevant `NOTES.md` as persistent research memory and an audit ledger,
 polished documentation or a transcript of agent activity. Preserve enough ground truth
 that a later researcher can reconstruct what was tried, why, what happened, and what
 changed next.
+
+The shared Obsidian vault is being evaluated as a cross-repository view of the same
+microscopic work. During this pilot, `NOTES.md` remains required and canonical. When the
+vault is available, mirror each material checkpoint there as well. Do not replace or
+weaken the repository record until the team explicitly ends the pilot.
 
 ## Find the notebook first
 
@@ -19,6 +24,20 @@ changed next.
 - Read the relevant notebook before substantive work. For a very large notebook, scan its
   headings and tail first, then read the sections related to the current question.
 - A read-only status, explanation, or review request does not authorize a notes edit.
+
+## Mirror to the shared vault during the pilot
+
+Before the first authorized research write in a task, run
+`scripts/resolve-shared-vault.py`, relative to this `SKILL.md`. It checks only explicit
+configuration and bounded Obsidian registry files; never recursively search for a vault.
+
+- If it resolves a vault, read [references/shared-vault-pilot.md](references/shared-vault-pilot.md)
+  completely and follow its dual-write protocol.
+- If it cannot resolve the vault, keep the required `NOTES.md` record, report that the
+  mirror was skipped and why, and do not block the research work or create another vault.
+- If the path resolves but the execution sandbox blocks the write, use the normal
+  approval path for that exact vault. If access remains unavailable, handle it as a
+  skipped mirror.
 
 ## What belongs in the record
 
@@ -57,6 +76,8 @@ secret-bearing command in the notebook.
 - Follow the notebook's established structure and level of detail.
 - Add each checkpoint as a complete block at the end of the file. For new notebooks, use a
   short title and one sentence explaining their scope.
+- During the vault pilot, include the shared checkpoint ID and vault-relative note path in
+  each new repository checkpoint when a vault was resolved.
 - Use a locally correct timestamp in new top-level entries, preferably
   `## YYYY-MM-DD — concise subject`. Preserve a notebook's established run numbering and
   heading style; include local time and timezone when concurrent branches or same-day
