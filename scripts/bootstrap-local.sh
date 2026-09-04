@@ -76,7 +76,7 @@ fi
 # 2. Skills — the same SKILL.md files work with both agents.
 for skills_dir in "${SKILLS_DIRS[@]}"; do
   mkdir -p "${skills_dir}"
-  for skill in nersc-workflow mlflow-query adept-run research-notes; do
+  for skill in nersc-workflow mlflow-query adept-run research-notes nersc-investigation-consumer; do
     src="${REPO_ROOT}/skills/${skill}"
     dst="${skills_dir}/${skill}"
     if [[ -e "${dst}" && ! -L "${dst}" ]]; then

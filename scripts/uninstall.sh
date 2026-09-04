@@ -86,7 +86,7 @@ for selected_agent in "${AGENTS[@]}"; do
       ;;
   esac
 
-  for skill in nersc-workflow mlflow-query adept-run research-notes; do
+  for skill in nersc-workflow mlflow-query adept-run research-notes nersc-investigation-consumer; do
     remove_managed_link "${skills_dir}/${skill}" "${REPO_ROOT}/skills/${skill}"
   done
   remove_managed_link "$compat_link" "$OPS_DIR" "$LEGACY_OPS_DIR"
