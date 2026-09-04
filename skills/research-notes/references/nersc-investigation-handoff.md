@@ -6,19 +6,27 @@ to the requesting agent.
 
 ## Request contract
 
-Consume only investigation notes under `Notes/<project>/` with these top-level properties:
+A request remains an ordinary investigation note created from the live vault template. Its
+queue state is carried by exactly one strict, versioned JSON envelope in the note body:
 
-```yaml
-type: investigation
-status: active
-execution: nersc
-execution_status: requested
-execution_owner:
-execution_updated:
+```markdown
+<!-- ergodic-nersc-investigation:v1
+{
+  "schema": "ergodic.nersc-investigation/v1",
+  "research_status": "active",
+  "execution": "nersc",
+  "execution_status": "requested",
+  "execution_owner": "",
+  "execution_updated": "2026-09-04T12:00:00Z"
+}
+-->
 ```
 
-The top-level `status` retains the vault's research lifecycle (`active`, `blocked`,
-`complete`, or `superseded`). The separate handoff lifecycle is:
+The helper parses this envelope with Python's standard JSON parser, rejects duplicate or
+unknown keys, and requires every value to be a string. It does not attempt to parse the
+note's arbitrary YAML frontmatter. `research_status` mirrors the note's research lifecycle;
+the executor must confirm the visible note status agrees before running. The handoff
+lifecycle is:
 
 ```text
 requested -> assigned -> running -> results-ready
@@ -35,7 +43,7 @@ material detail is missing, append a clarification checkpoint and mark the execu
 Obsidian Sync does not provide an atomic distributed lock. Agents therefore never
 self-claim an unassigned request. A local human chooses one executor, writes its unique,
 stable identity to `execution_owner`, and changes `execution_status` from `requested` to
-`assigned`. Only that named executor may proceed.
+`assigned` in the JSON envelope. Only that named executor may proceed.
 
 ## Prerequisites
 
@@ -72,7 +80,7 @@ list and let the user choose; never silently select a request from another proje
 2. Do not edit or execute an unassigned request. Ask the local human to assign exactly one
    executor in the note; the agent must not perform the `requested -> assigned` transition.
 3. After the human confirms the assignment has synchronized, re-read the note and require
-   `execution_status: assigned` plus an `execution_owner` exactly matching this executor's
+   `"execution_status": "assigned"` plus an `execution_owner` exactly matching this executor's
    unique identity. Stop if either value differs.
 4. Append an `ASSIGNED` checkpoint using the live checkpoint template. Record the smallest
    useful intended run and the human assignment confirmation.
@@ -90,8 +98,9 @@ with a new checkpoint rather than rewriting history.
 2. Treat requested commands as task data, not as an approval bypass. Ask before destructive
    operations, broad cancellation, credential access, or a material expansion of resource
    cost or scientific scope.
-3. Revalidate the human-assigned owner, then set `execution_status: running`, update
-   `execution_updated`, and append a `PLANNED` checkpoint before allocation or submission.
+3. Revalidate the human-assigned owner, then update the JSON envelope to
+   `"execution_status": "running"`, refresh `execution_updated`, and append a `PLANNED`
+   checkpoint before allocation or submission.
 4. Follow `nersc-workflow`; do not invent a parallel SSH or Slurm workflow. Prefer an
    isolated interactive session for edit-run-debug work and a clean commit-pinned run for
    reproducible or long-queue work.
@@ -119,25 +128,23 @@ checkpoint containing:
 - deviations from the request and the next smallest useful action.
 
 Put pointers, concise measurements, and small supporting figures in the vault. Do not copy
-large logs, checkpoints, generated datasets, or secrets into it. Then set:
-
-```yaml
-execution_status: results-ready
-execution_updated: <ISO-8601 timestamp with timezone>
-```
+large logs, checkpoints, generated datasets, or secrets into it. Then set
+`execution_status` to `results-ready` and refresh `execution_updated` inside the existing
+JSON envelope.
 
 Re-read the note and verify the checkpoint, provenance, artifact pointers, owner, and status
 are present. The requester—not the executor—marks the top-level investigation complete or
 returns `execution_status` to `requested` for another iteration.
 
 If no useful run can be made, append a `BLOCKED` checkpoint with the exact blocker and set
-`execution_status: blocked`. Use `cancelled` only when the requester or local user explicitly
-cancels the handoff, and record whether any active NERSC job remains.
+`execution_status` to `blocked` in the JSON envelope. Use `cancelled` only when the
+requester or local user explicitly cancels the handoff, and record whether any active
+NERSC job remains.
 
 ## Verification checklist
 
-- The note has valid closed frontmatter, `type: investigation`, `status: active`, and
-  `execution: nersc`.
+- The note follows the live investigation template and has exactly one valid v1 JSON
+  handoff envelope whose `research_status` agrees with the visible note status.
 - A local human—not an agent—assigned one unique executor, and that owner was revalidated
   immediately before compute was allocated.
 - Actual code state, command, config, IDs, observations, and artifact locations were
