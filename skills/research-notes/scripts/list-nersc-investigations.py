@@ -11,7 +11,7 @@ import stat
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Iterator
 
 
 START_MARKER = "<!-- ergodic-nersc-investigation:v1"
@@ -74,6 +74,46 @@ def resolve_vault() -> Path:
     return resolver.validate_vault(str(matches[0]), "Obsidian registry")
 
 
+def directory_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return flags
+
+
+def open_child_directory(parent_descriptor: int, name: str) -> int:
+    before = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise OSError(f"not a real directory: {name}")
+    descriptor = os.open(name, directory_flags(), dir_fd=parent_descriptor)
+    opened = os.fstat(descriptor)
+    if not stat.S_ISDIR(opened.st_mode) or (
+        before.st_dev,
+        before.st_ino,
+    ) != (opened.st_dev, opened.st_ino):
+        os.close(descriptor)
+        raise OSError(f"directory changed while opening: {name}")
+    return descriptor
+
+
+def open_canonical_directory(path: Path) -> int:
+    path = path.resolve(strict=True)
+    if not path.is_absolute():
+        raise OSError(f"expected an absolute path: {path}")
+    descriptor = os.open(path.anchor, directory_flags())
+    try:
+        for component in path.parts[1:]:
+            next_descriptor = open_child_directory(descriptor, component)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
@@ -83,52 +123,7 @@ def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def handoff(path: Path) -> dict[str, str] | None:
-    directory_descriptor: int | None = None
-    file_descriptor: int | None = None
-    try:
-        directory_before = path.parent.lstat()
-        if stat.S_ISLNK(directory_before.st_mode) or not stat.S_ISDIR(
-            directory_before.st_mode
-        ):
-            return None
-        directory_flags = os.O_RDONLY
-        if hasattr(os, "O_DIRECTORY"):
-            directory_flags |= os.O_DIRECTORY
-        if hasattr(os, "O_NOFOLLOW"):
-            directory_flags |= os.O_NOFOLLOW
-        directory_descriptor = os.open(path.parent, directory_flags)
-        directory_opened = os.fstat(directory_descriptor)
-        if (directory_before.st_dev, directory_before.st_ino) != (
-            directory_opened.st_dev,
-            directory_opened.st_ino,
-        ):
-            return None
-
-        before = os.stat(path.name, dir_fd=directory_descriptor, follow_symlinks=False)
-        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-            return None
-        file_flags = os.O_RDONLY
-        if hasattr(os, "O_NOFOLLOW"):
-            file_flags |= os.O_NOFOLLOW
-        file_descriptor = os.open(path.name, file_flags, dir_fd=directory_descriptor)
-        opened = os.fstat(file_descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            return None
-        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-            return None
-        with os.fdopen(file_descriptor, encoding="utf-8") as stream:
-            file_descriptor = None
-            lines = stream.read().splitlines()
-    except (OSError, UnicodeDecodeError, NotImplementedError) as exc:
-        print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
-        return None
-    finally:
-        if file_descriptor is not None:
-            os.close(file_descriptor)
-        if directory_descriptor is not None:
-            os.close(directory_descriptor)
-
+def parse_envelope(lines: list[str]) -> dict[str, str] | None:
     starts = [index for index, line in enumerate(lines) if line == START_MARKER]
     if len(starts) != 1:
         return None
@@ -144,9 +139,11 @@ def handoff(path: Path) -> dict[str, str] | None:
     if end is None:
         return None
 
-    payload = "\n".join(lines[start + 1 : end])
     try:
-        data = json.loads(payload, object_pairs_hook=reject_duplicate_keys)
+        data = json.loads(
+            "\n".join(lines[start + 1 : end]),
+            object_pairs_hook=reject_duplicate_keys,
+        )
     except (json.JSONDecodeError, ValueError):
         return None
     if not isinstance(data, dict) or set(data) != REQUIRED_KEYS:
@@ -165,50 +162,81 @@ def handoff(path: Path) -> dict[str, str] | None:
     return data
 
 
-def candidate_notes(notes_root: Path, project: str | None):
-    if notes_root.is_symlink() or not notes_root.is_dir():
-        raise SystemExit(f"error: vault Notes root is missing or symlinked: {notes_root}")
-    notes_root = notes_root.resolve()
-    if project is not None:
-        project_path = Path(project)
-        if (
-            not project
-            or project in {".", ".."}
-            or project_path.is_absolute()
-            or len(project_path.parts) != 1
-            or "/" in project
-            or "\\" in project
-        ):
-            raise SystemExit(
-                "error: --project must be one exact Notes/<project> folder name"
-            )
-        roots = [notes_root / project]
-    else:
-        try:
-            roots = sorted(
-                path
-                for path in notes_root.iterdir()
-                if path.is_dir() and not path.is_symlink()
-            )
-        except OSError as exc:
-            raise SystemExit(f"error: cannot list vault notes: {exc}") from exc
+def read_envelope(directory_descriptor: int, name: str, display_path: Path):
+    descriptor: int | None = None
+    try:
+        before = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(name, flags, dir_fd=directory_descriptor)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (
+            before.st_dev,
+            before.st_ino,
+        ) != (opened.st_dev, opened.st_ino):
+            return None
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            descriptor = None
+            return parse_envelope(stream.read().splitlines())
+    except (OSError, UnicodeDecodeError, NotImplementedError) as exc:
+        print(f"warning: cannot read {display_path}: {exc}", file=sys.stderr)
+        return None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
-    for root in roots:
-        if not root.is_dir() or root.is_symlink():
-            continue
-        if root.resolve().parent != notes_root:
-            continue
-        try:
-            yield from sorted(
-                path
-                for path in root.iterdir()
-                if path.is_file()
-                and not path.is_symlink()
-                and path.suffix == ".md"
-                and path.resolve().parent == root.resolve()
-            )
-        except OSError as exc:
-            print(f"warning: cannot list {root}: {exc}", file=sys.stderr)
+
+def validate_project(project: str) -> None:
+    project_path = Path(project)
+    if (
+        not project
+        or project in {".", ".."}
+        or project_path.is_absolute()
+        or len(project_path.parts) != 1
+        or "/" in project
+        or "\\" in project
+    ):
+        raise SystemExit("error: --project must be one exact Notes/<project> folder name")
+
+
+def scan_handoffs(vault: Path, project: str | None) -> Iterator[tuple[Path, dict[str, str]]]:
+    vault_descriptor: int | None = None
+    notes_descriptor: int | None = None
+    try:
+        vault = vault.resolve(strict=True)
+        vault_descriptor = open_canonical_directory(vault)
+        notes_descriptor = open_child_directory(vault_descriptor, "Notes")
+        if project is not None:
+            validate_project(project)
+            projects = [project]
+        else:
+            projects = sorted(os.listdir(notes_descriptor))
+
+        for project_name in projects:
+            project_descriptor: int | None = None
+            try:
+                validate_project(project_name)
+                project_descriptor = open_child_directory(notes_descriptor, project_name)
+                for name in sorted(os.listdir(project_descriptor)):
+                    if Path(name).name != name or not name.endswith(".md"):
+                        continue
+                    display_path = vault / "Notes" / project_name / name
+                    envelope = read_envelope(project_descriptor, name, display_path)
+                    if envelope is not None:
+                        yield display_path, envelope
+            except (OSError, NotImplementedError):
+                continue
+            finally:
+                if project_descriptor is not None:
+                    os.close(project_descriptor)
+    except (OSError, NotImplementedError) as exc:
+        raise SystemExit(f"error: cannot scan vault Notes directory: {exc}") from exc
+    finally:
+        if notes_descriptor is not None:
+            os.close(notes_descriptor)
+        if vault_descriptor is not None:
+            os.close(vault_descriptor)
 
 
 def main() -> None:
@@ -223,9 +251,8 @@ def main() -> None:
 
     vault = resolve_vault()
     results = []
-    for path in candidate_notes(vault / "Notes", args.project):
-        envelope = handoff(path)
-        if envelope is None or envelope["execution_status"] != args.status:
+    for path, envelope in scan_handoffs(vault, args.project):
+        if envelope["execution_status"] != args.status:
             continue
         if args.owner is not None and envelope["execution_owner"] != args.owner:
             continue
