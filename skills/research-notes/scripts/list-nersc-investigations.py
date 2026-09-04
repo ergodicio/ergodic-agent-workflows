@@ -56,13 +56,13 @@ def frontmatter(path: Path) -> dict[str, str] | None:
     except OSError as exc:
         print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
         return None
-    if not lines or lines[0].strip() != "---":
+    if not lines or lines[0] != "---":
         return None
 
     values: dict[str, str] = {}
     nested_list_key: str | None = None
     for line in lines[1:]:
-        if line.strip() == "---":
+        if line == "---":
             return values
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -87,9 +87,11 @@ def frontmatter(path: Path) -> dict[str, str] | None:
             continue
         if ":" not in line:
             return None
-        key, value = line.split(":", 1)
+        key, separator, raw_value = line.partition(":")
+        if separator != ":" or (raw_value and not raw_value.startswith(" ")):
+            return None
         key = key.strip()
-        value = value.strip()
+        value = raw_value.strip()
         if not key or any(char.isspace() for char in key) or key in values:
             return None
         if value.startswith(('"', "'")):
