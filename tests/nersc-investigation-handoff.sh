@@ -101,21 +101,6 @@ external.write_text("<!-- ergodic-nersc-investigation:v1\n{}\n-->\n")
 (vault / "Notes/linked-project").symlink_to(outside, target_is_directory=True)
 (vault / "Notes/tsadar/linked.md").symlink_to(external)
 
-race = note("tsadar", "race", envelope())
-candidate = next(
-    path for path in module.candidate_notes(vault / "Notes", "tsadar")
-    if path.name == "race.md"
-)
-external_valid = outside / "external-valid.md"
-external_valid.write_text(
-    "<!-- ergodic-nersc-investigation:v1\n"
-    + json.dumps(envelope())
-    + "\n-->\n"
-)
-race.unlink()
-race.symlink_to(external_valid)
-assert module.handoff(candidate) is None
-
 
 def run(*args, check=True):
     return subprocess.run(
@@ -147,6 +132,31 @@ assert [item["id"] for item in project] == ["requested"]
 
 for value in ("", "..", "../tsadar", str(vault / "Notes/tsadar")):
     assert run("--project", value, check=False).returncode != 0, value
+
+# Once iteration begins, replacing the visible Notes ancestor must not redirect later
+# project/file opens to an external tree; all opens remain relative to pinned descriptors.
+race_vault = root / "Race Vault"
+for project_name, note_name in (("a", "first"), ("z", "original")):
+    directory = race_vault / "Notes" / project_name
+    directory.mkdir(parents=True)
+    (directory / f"{note_name}.md").write_text(
+        "<!-- ergodic-nersc-investigation:v1\n"
+        + json.dumps(envelope())
+        + "\n-->\n"
+    )
+external_race_notes = root / "Race External Notes"
+(external_race_notes / "z").mkdir(parents=True)
+(external_race_notes / "z/external.md").write_text(
+    "<!-- ergodic-nersc-investigation:v1\n"
+    + json.dumps(envelope())
+    + "\n-->\n"
+)
+iterator = module.scan_handoffs(race_vault, None)
+first = next(iterator)
+(race_vault / "Notes").rename(race_vault / "Notes-original")
+(race_vault / "Notes").symlink_to(external_race_notes, target_is_directory=True)
+rest = list(iterator)
+assert {path.stem for path, _ in [first, *rest]} == {"first", "original"}
 
 external_notes = root / "External Notes"
 (external_notes / "escaped").mkdir(parents=True)
