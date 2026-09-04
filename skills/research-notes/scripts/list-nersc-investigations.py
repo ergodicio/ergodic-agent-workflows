@@ -9,6 +9,28 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
+
+
+START_MARKER = "<!-- ergodic-nersc-investigation:v1"
+END_MARKER = "-->"
+SCHEMA = "ergodic.nersc-investigation/v1"
+REQUIRED_KEYS = {
+    "schema",
+    "research_status",
+    "execution",
+    "execution_status",
+    "execution_owner",
+    "execution_updated",
+}
+EXECUTION_STATUSES = {
+    "requested",
+    "assigned",
+    "running",
+    "results-ready",
+    "blocked",
+    "cancelled",
+}
 
 
 def load_vault_resolver() -> ModuleType:
@@ -50,57 +72,52 @@ def resolve_vault() -> Path:
     return resolver.validate_vault(str(matches[0]), "Obsidian registry")
 
 
-def frontmatter(path: Path) -> dict[str, str] | None:
+def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def handoff(path: Path) -> dict[str, str] | None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
         return None
-    if not lines or lines[0] != "---":
+
+    starts = [index for index, line in enumerate(lines) if line == START_MARKER]
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    ends = [
+        index for index, line in enumerate(lines[start + 1 :], start + 1)
+        if line == END_MARKER
+    ]
+    if len(ends) != 1:
         return None
 
-    values: dict[str, str] = {}
-    nested_list_key: str | None = None
-    for line in lines[1:]:
-        if line == "---":
-            return values
-        if not line.strip() or line.lstrip().startswith("#"):
-            continue
-        if line[0].isspace():
-            if "\t" in line or not line.startswith("  - "):
-                return None
-            if nested_list_key not in {"tags", "owners", "repos"}:
-                return None
-            item = line[4:].strip()
-            if not item:
-                return None
-            if item.startswith(('"', "'")):
-                if len(item) < 2 or item[-1] != item[0]:
-                    return None
-            elif (
-                ": " in item
-                or item.endswith(":")
-                or item[0] in "[{!&*|>@`"
-                or item[-1] in "]}"
-            ):
-                return None
-            continue
-        if ":" not in line:
+    payload = "\n".join(lines[start + 1 : ends[0]])
+    try:
+        data = json.loads(payload, object_pairs_hook=reject_duplicate_keys)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict) or set(data) != REQUIRED_KEYS:
+        return None
+    if any(not isinstance(value, str) for value in data.values()):
+        return None
+    if data["schema"] != SCHEMA:
+        return None
+    if data["research_status"] != "active" or data["execution"] != "nersc":
+        return None
+    if data["execution_status"] not in EXECUTION_STATUSES:
+        return None
+    if data["execution_status"] in {"assigned", "running", "results-ready"}:
+        if not data["execution_owner"].strip():
             return None
-        key, separator, raw_value = line.partition(":")
-        if separator != ":" or (raw_value and not raw_value.startswith(" ")):
-            return None
-        key = key.strip()
-        value = raw_value.strip()
-        if not key or any(char.isspace() for char in key) or key in values:
-            return None
-        if value.startswith(('"', "'")):
-            if len(value) < 2 or value[-1] != value[0]:
-                return None
-            value = value[1:-1]
-        values[key] = value
-        nested_list_key = key if not value else None
-    return None
+    return data
 
 
 def candidate_notes(notes_root: Path, project: str | None):
@@ -152,46 +169,35 @@ def main() -> None:
     args = parser.parse_args()
 
     vault = resolve_vault()
-    notes_root = vault / "Notes"
     results = []
-    for path in candidate_notes(notes_root, args.project):
-        properties = frontmatter(path)
-        if properties is None:
+    for path in candidate_notes(vault / "Notes", args.project):
+        envelope = handoff(path)
+        if envelope is None or envelope["execution_status"] != args.status:
             continue
-        if properties.get("type") != "investigation":
-            continue
-        if properties.get("status") != "active":
-            continue
-        if properties.get("execution") != "nersc":
-            continue
-        if properties.get("execution_status") != args.status:
-            continue
-        if args.owner is not None and properties.get("execution_owner") != args.owner:
+        if args.owner is not None and envelope["execution_owner"] != args.owner:
             continue
         results.append(
             {
                 "path": str(path.relative_to(vault)),
-                "id": properties.get("id", path.stem),
-                "project": properties.get("project", path.parent.name),
-                "execution_status": properties.get("execution_status", ""),
-                "execution_owner": properties.get("execution_owner", ""),
-                "updated": properties.get("execution_updated", ""),
+                "id": path.stem,
+                "project": path.parent.name,
+                "execution_status": envelope["execution_status"],
+                "execution_owner": envelope["execution_owner"],
+                "updated": envelope["execution_updated"],
             }
         )
 
     if args.json:
         json.dump(results, sys.stdout, indent=2)
         sys.stdout.write("\n")
-        return
-
-    if not results:
+    elif not results:
         print(f"No NERSC investigation requests with status {args.status!r}.")
-        return
-    for result in results:
-        print(
-            f"{result['path']}\t{result['id']}\t{result['project']}\t"
-            f"{result['execution_status']}\t{result['execution_owner']}"
-        )
+    else:
+        for result in results:
+            print(
+                f"{result['path']}\t{result['id']}\t{result['project']}\t"
+                f"{result['execution_status']}\t{result['execution_owner']}"
+            )
 
 
 if __name__ == "__main__":
