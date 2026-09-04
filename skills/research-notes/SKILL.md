@@ -1,6 +1,6 @@
 ---
 name: research-notes
-description: Maintain append-only research notebooks with reproducible checkpoints and, when configured, mirror them to uniquely named notes in a shared Obsidian vault. Use for scientific simulations, experiments, numerical investigations, and multi-session research decisions; do not use for routine code maintenance with no research record.
+description: Maintain research records and consume shared-vault NERSC investigation handoffs. Use for scientific simulations, experiments, numerical investigations, and multi-session research decisions; do not use for routine code maintenance with no research record.
 ---
 
 # Research Notes
@@ -38,6 +38,18 @@ configuration and bounded Obsidian registry files; never recursively search for 
 - If the path resolves but the execution sandbox blocks the write, use the normal
   approval path for that exact vault. If access remains unavailable, handle it as a
   skipped mirror.
+
+## Consume NERSC investigation handoffs
+
+When the user asks a local agent to find, claim, run, or return a NERSC investigation
+request from the shared vault, read
+[references/nersc-investigation-handoff.md](references/nersc-investigation-handoff.md)
+completely and follow its executor protocol. It composes this skill's dual-write research
+record with `nersc-workflow`; it does not replace either one.
+
+This path is only for an agent running on a local machine that already has the user's NERSC
+access. A credential-free requesting agent writes the handoff into the vault but does not
+receive an SSH proxy key or use this executor path.
 
 ## What belongs in the record
 
