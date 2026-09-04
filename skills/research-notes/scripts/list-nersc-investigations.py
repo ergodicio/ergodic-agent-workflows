@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -82,11 +84,29 @@ def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def handoff(path: Path) -> dict[str, str] | None:
+    descriptor: int | None = None
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            return None
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            return None
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            return None
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            descriptor = None
+            lines = stream.read().splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
         return None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
     starts = [index for index, line in enumerate(lines) if line == START_MARKER]
     if len(starts) != 1:

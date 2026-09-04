@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 - "$REPO_ROOT" <<'PY'
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -16,6 +17,10 @@ skill = repo / "skills/research-notes/SKILL.md"
 reference = repo / "skills/research-notes/references/nersc-investigation-handoff.md"
 assert "references/nersc-investigation-handoff.md" in skill.read_text()
 assert reference.is_file()
+spec = importlib.util.spec_from_file_location("list_nersc_investigations", helper)
+assert spec is not None and spec.loader is not None
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 
 root = Path(tempfile.mkdtemp())
 vault = root / "Ergodic Research"
@@ -73,6 +78,7 @@ for name, payload in invalid.items():
     note("tsadar", name, payload)
 note("tsadar", "unterminated", json.dumps(envelope()), closing=False)
 note("tsadar", "no-marker", "", marker=False)
+(vault / "Notes/tsadar/invalid-utf8.md").write_bytes(b"\xff\xfe")
 
 duplicate = json.dumps(envelope(), indent=2).replace(
     '  "execution": "nersc",',
@@ -94,6 +100,21 @@ external = outside / "external.md"
 external.write_text("<!-- ergodic-nersc-investigation:v1\n{}\n-->\n")
 (vault / "Notes/linked-project").symlink_to(outside, target_is_directory=True)
 (vault / "Notes/tsadar/linked.md").symlink_to(external)
+
+race = note("tsadar", "race", envelope())
+candidate = next(
+    path for path in module.candidate_notes(vault / "Notes", "tsadar")
+    if path.name == "race.md"
+)
+external_valid = outside / "external-valid.md"
+external_valid.write_text(
+    "<!-- ergodic-nersc-investigation:v1\n"
+    + json.dumps(envelope())
+    + "\n-->\n"
+)
+race.unlink()
+race.symlink_to(external_valid)
+assert module.handoff(candidate) is None
 
 
 def run(*args, check=True):
