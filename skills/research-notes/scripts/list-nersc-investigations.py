@@ -84,29 +84,50 @@ def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def handoff(path: Path) -> dict[str, str] | None:
-    descriptor: int | None = None
+    directory_descriptor: int | None = None
+    file_descriptor: int | None = None
     try:
-        before = path.lstat()
+        directory_before = path.parent.lstat()
+        if stat.S_ISLNK(directory_before.st_mode) or not stat.S_ISDIR(
+            directory_before.st_mode
+        ):
+            return None
+        directory_flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            directory_flags |= os.O_DIRECTORY
+        if hasattr(os, "O_NOFOLLOW"):
+            directory_flags |= os.O_NOFOLLOW
+        directory_descriptor = os.open(path.parent, directory_flags)
+        directory_opened = os.fstat(directory_descriptor)
+        if (directory_before.st_dev, directory_before.st_ino) != (
+            directory_opened.st_dev,
+            directory_opened.st_ino,
+        ):
+            return None
+
+        before = os.stat(path.name, dir_fd=directory_descriptor, follow_symlinks=False)
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
             return None
-        flags = os.O_RDONLY
+        file_flags = os.O_RDONLY
         if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(path, flags)
-        opened = os.fstat(descriptor)
+            file_flags |= os.O_NOFOLLOW
+        file_descriptor = os.open(path.name, file_flags, dir_fd=directory_descriptor)
+        opened = os.fstat(file_descriptor)
         if not stat.S_ISREG(opened.st_mode):
             return None
         if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
             return None
-        with os.fdopen(descriptor, encoding="utf-8") as stream:
-            descriptor = None
+        with os.fdopen(file_descriptor, encoding="utf-8") as stream:
+            file_descriptor = None
             lines = stream.read().splitlines()
-    except (OSError, UnicodeDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, NotImplementedError) as exc:
         print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
         return None
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
+        if file_descriptor is not None:
+            os.close(file_descriptor)
+        if directory_descriptor is not None:
+            os.close(directory_descriptor)
 
     starts = [index for index, line in enumerate(lines) if line == START_MARKER]
     if len(starts) != 1:
