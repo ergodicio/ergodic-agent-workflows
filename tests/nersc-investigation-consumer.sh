@@ -11,6 +11,13 @@ fail() {
   exit 1
 }
 
+grep -Eq 'for skill in .*nersc-investigation-consumer' \
+  "${REPO_ROOT}/scripts/bootstrap-local.sh" \
+  || fail 'local bootstrap does not install the consumer skill'
+grep -Eq 'for skill in .*nersc-investigation-consumer' \
+  "${REPO_ROOT}/scripts/uninstall.sh" \
+  || fail 'uninstall does not remove the consumer skill'
+
 VAULT="${TEST_ROOT}/Ergodic Research"
 mkdir -p "${VAULT}/Notes/tsadar" "${VAULT}/Notes/adept"
 
