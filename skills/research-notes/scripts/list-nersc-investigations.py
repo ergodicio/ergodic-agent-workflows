@@ -60,21 +60,41 @@ def frontmatter(path: Path) -> dict[str, str] | None:
         return None
 
     values: dict[str, str] = {}
+    nested_list_key: str | None = None
     for line in lines[1:]:
         if line.strip() == "---":
             return values
-        if not line or line[0].isspace() or ":" not in line:
+        if not line.strip() or line.lstrip().startswith("#"):
             continue
+        if line[0].isspace():
+            stripped = line.strip()
+            if nested_list_key not in {"tags", "owners", "repos"}:
+                return None
+            if not stripped.startswith("- ") or not stripped[2:].strip():
+                return None
+            continue
+        if ":" not in line:
+            return None
         key, value = line.split(":", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
+        key = key.strip()
+        value = value.strip()
+        if not key or any(char.isspace() for char in key) or key in values:
+            return None
+        if value.startswith(('"', "'")):
+            if len(value) < 2 or value[-1] != value[0]:
+                return None
+            value = value[1:-1]
+        values[key] = value
+        nested_list_key = key if not value else None
     return None
 
 
 def candidate_notes(notes_root: Path, project: str | None):
-    if project:
+    if project is not None:
         project_path = Path(project)
         if (
-            project in {".", ".."}
+            not project
+            or project in {".", ".."}
             or project_path.is_absolute()
             or len(project_path.parts) != 1
             or "/" in project
