@@ -92,14 +92,18 @@ def handoff(path: Path) -> dict[str, str] | None:
     if len(starts) != 1:
         return None
     start = starts[0]
-    ends = [
-        index for index, line in enumerate(lines[start + 1 :], start + 1)
-        if line == END_MARKER
-    ]
-    if len(ends) != 1:
+    end = next(
+        (
+            index
+            for index, line in enumerate(lines[start + 1 :], start + 1)
+            if line == END_MARKER
+        ),
+        None,
+    )
+    if end is None:
         return None
 
-    payload = "\n".join(lines[start + 1 : ends[0]])
+    payload = "\n".join(lines[start + 1 : end])
     try:
         data = json.loads(payload, object_pairs_hook=reject_duplicate_keys)
     except (json.JSONDecodeError, ValueError):
@@ -121,6 +125,9 @@ def handoff(path: Path) -> dict[str, str] | None:
 
 
 def candidate_notes(notes_root: Path, project: str | None):
+    if notes_root.is_symlink() or not notes_root.is_dir():
+        raise SystemExit(f"error: vault Notes root is missing or symlinked: {notes_root}")
+    notes_root = notes_root.resolve()
     if project is not None:
         project_path = Path(project)
         if (
@@ -148,11 +155,16 @@ def candidate_notes(notes_root: Path, project: str | None):
     for root in roots:
         if not root.is_dir() or root.is_symlink():
             continue
+        if root.resolve().parent != notes_root:
+            continue
         try:
             yield from sorted(
                 path
                 for path in root.iterdir()
-                if path.is_file() and not path.is_symlink() and path.suffix == ".md"
+                if path.is_file()
+                and not path.is_symlink()
+                and path.suffix == ".md"
+                and path.resolve().parent == root.resolve()
             )
         except OSError as exc:
             print(f"warning: cannot list {root}: {exc}", file=sys.stderr)

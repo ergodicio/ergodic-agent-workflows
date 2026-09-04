@@ -50,7 +50,10 @@ def note(project, name, payload, marker=True, closing=True):
     return path
 
 
-note("tsadar", "requested", envelope())
+requested_note = note("tsadar", "requested", envelope())
+requested_note.write_text(
+    requested_note.read_text() + "\n<!-- unrelated comment\nordinary text\n-->\n"
+)
 note("adept", "requested", envelope())
 note("tsadar", "ready", envelope("results-ready", "local-agent"))
 note("tsadar", "assigned-local", envelope("assigned", "local-agent-7"))
@@ -123,6 +126,17 @@ assert [item["id"] for item in project] == ["requested"]
 
 for value in ("", "..", "../tsadar", str(vault / "Notes/tsadar")):
     assert run("--project", value, check=False).returncode != 0, value
+
+external_notes = root / "External Notes"
+(external_notes / "escaped").mkdir(parents=True)
+old_vault = vault
+vault = root / "Symlinked Notes Vault"
+vault.mkdir()
+(vault / "Notes").symlink_to(external_notes, target_is_directory=True)
+note("escaped", "outside", envelope())
+os.environ["ERGODIC_RESEARCH_VAULT"] = str(vault)
+assert run("--json", check=False).returncode != 0
+vault = old_vault
 
 print("NERSC investigation handoff tests passed")
 PY
