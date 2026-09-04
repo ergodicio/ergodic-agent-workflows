@@ -74,6 +74,68 @@ status: active
 # Ordinary note
 EOF
 
+cat >"${VAULT}/Notes/tsadar/wrong-type.md" <<'EOF'
+---
+type: other
+status: active
+execution: nersc
+execution_status: requested
+---
+EOF
+
+cat >"${VAULT}/Notes/tsadar/inactive.md" <<'EOF'
+---
+type: investigation
+status: complete
+execution: nersc
+execution_status: requested
+---
+EOF
+
+cat >"${VAULT}/Notes/tsadar/malformed.md" <<'EOF'
+---
+type: investigation
+status: active
+execution: nersc
+execution_status: requested
+EOF
+
+cat >"${VAULT}/Notes/tsadar/assigned-local.md" <<'EOF'
+---
+type: investigation
+id: assigned-local
+project: TSADAR
+status: active
+execution: nersc
+execution_status: assigned
+execution_owner: local-agent-7
+---
+EOF
+
+cat >"${VAULT}/Notes/tsadar/assigned-other.md" <<'EOF'
+---
+type: investigation
+id: assigned-other
+project: TSADAR
+status: active
+execution: nersc
+execution_status: assigned
+execution_owner: other-agent
+---
+EOF
+
+mkdir -p "${VAULT}/Outside"
+cat >"${VAULT}/Outside/external.md" <<'EOF'
+---
+type: investigation
+status: active
+execution: nersc
+execution_status: requested
+---
+EOF
+ln -s "${VAULT}/Outside" "${VAULT}/Notes/linked-project"
+ln -s "${VAULT}/Outside/external.md" "${VAULT}/Notes/tsadar/linked.md"
+
 output="$(ERGODIC_RESEARCH_VAULT="$VAULT" python3 "$LIST_REQUESTS")"
 printf '%s\n' "$output" | grep -Fq 'Notes/tsadar/requested.md' \
   || fail 'default listing omitted the TSADAR request'
@@ -83,6 +145,10 @@ printf '%s\n' "$output" | grep -Fq 'ready.md' \
   && fail 'default listing included a results-ready note'
 printf '%s\n' "$output" | grep -Fq 'ordinary.md' \
   && fail 'default listing included an ordinary investigation note'
+for rejected in wrong-type.md inactive.md malformed.md linked.md external.md; do
+  printf '%s\n' "$output" | grep -Fq "$rejected" \
+    && fail "default listing included rejected candidate: $rejected"
+done
 
 project_output="$(ERGODIC_RESEARCH_VAULT="$VAULT" \
   python3 "$LIST_REQUESTS" --project tsadar)"
@@ -103,6 +169,18 @@ assert items[0]["id"] == "tsadar-ready", items
 assert items[0]["execution_owner"] == "local-agent", items
 PY
 
+assigned_json="$(ERGODIC_RESEARCH_VAULT="$VAULT" \
+  python3 "$LIST_REQUESTS" --status assigned --owner local-agent-7 --json)"
+python3 - "$assigned_json" <<'PY'
+import json
+import sys
+
+items = json.loads(sys.argv[1])
+assert len(items) == 1, items
+assert items[0]["id"] == "assigned-local", items
+assert items[0]["execution_owner"] == "local-agent-7", items
+PY
+
 empty="$(ERGODIC_RESEARCH_VAULT="$VAULT" \
   python3 "$LIST_REQUESTS" --project missing)"
 [ "$empty" = "No NERSC investigation requests with status 'requested'." ] \
@@ -111,6 +189,10 @@ empty="$(ERGODIC_RESEARCH_VAULT="$VAULT" \
 if ERGODIC_RESEARCH_VAULT="$VAULT" \
     python3 "$LIST_REQUESTS" --project ../tsadar >/dev/null 2>&1; then
   fail 'project filter accepted a path outside Notes/<project>'
+fi
+if ERGODIC_RESEARCH_VAULT="$VAULT" \
+    python3 "$LIST_REQUESTS" --project "${VAULT}/Notes/tsadar" >/dev/null 2>&1; then
+  fail 'project filter accepted an absolute path'
 fi
 
 printf 'NERSC investigation handoff tests passed\n'
