@@ -43,12 +43,13 @@ stable identity to `execution_owner`, and changes `execution_status` from `reque
    `research-notes` `SKILL.md`.
 2. Read the live vault `README.md`, `Templates/Investigation.md`, and
    `Templates/Checkpoint.md`; they are authoritative for layout and formatting.
-3. Load `nersc-workflow` and verify `ssh -o BatchMode=yes perlmutter true` before claiming.
+3. Load `nersc-workflow` and verify `ssh -o BatchMode=yes perlmutter true` before accepting
+   an assignment.
 4. Work from the repository named by the request and verify its code state before
    allocating resources. Load `adept-run` for adept simulations and `mlflow-query` for
    tracked-run inspection.
 
-If vault or NERSC access cannot be resolved, do not claim the request. Report the exact
+If vault or NERSC access cannot be resolved, do not accept the assignment. Report the exact
 blocker locally.
 
 ## Find requests with a bounded scan

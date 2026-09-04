@@ -30,6 +30,8 @@ execution: nersc
 execution_status: requested
 execution_owner:
 execution_updated: 2026-09-04T12:00:00Z
+tags:
+  - research/investigation
 ---
 
 # Requested
@@ -100,6 +102,35 @@ execution: nersc
 execution_status: requested
 EOF
 
+cat >"${VAULT}/Notes/tsadar/malformed-closed.md" <<'EOF'
+---
+type: investigation
+status: active
+- injected-sequence-item
+execution: nersc
+execution_status: requested
+---
+EOF
+
+cat >"${VAULT}/Notes/tsadar/duplicate-key.md" <<'EOF'
+---
+type: investigation
+status: active
+execution: other
+execution: nersc
+execution_status: requested
+---
+EOF
+
+cat >"${VAULT}/Notes/tsadar/indented-required.md" <<'EOF'
+---
+type: investigation
+status: active
+  execution: nersc
+execution_status: requested
+---
+EOF
+
 cat >"${VAULT}/Notes/tsadar/assigned-local.md" <<'EOF'
 ---
 type: investigation
@@ -145,7 +176,8 @@ printf '%s\n' "$output" | grep -Fq 'ready.md' \
   && fail 'default listing included a results-ready note'
 printf '%s\n' "$output" | grep -Fq 'ordinary.md' \
   && fail 'default listing included an ordinary investigation note'
-for rejected in wrong-type.md inactive.md malformed.md linked.md external.md; do
+for rejected in wrong-type.md inactive.md malformed.md malformed-closed.md \
+    duplicate-key.md indented-required.md linked.md external.md; do
   printf '%s\n' "$output" | grep -Fq "$rejected" \
     && fail "default listing included rejected candidate: $rejected"
 done
@@ -193,6 +225,10 @@ fi
 if ERGODIC_RESEARCH_VAULT="$VAULT" \
     python3 "$LIST_REQUESTS" --project "${VAULT}/Notes/tsadar" >/dev/null 2>&1; then
   fail 'project filter accepted an absolute path'
+fi
+if ERGODIC_RESEARCH_VAULT="$VAULT" \
+    python3 "$LIST_REQUESTS" --project "" >/dev/null 2>&1; then
+  fail 'project filter accepted an explicit empty value'
 fi
 
 printf 'NERSC investigation handoff tests passed\n'
