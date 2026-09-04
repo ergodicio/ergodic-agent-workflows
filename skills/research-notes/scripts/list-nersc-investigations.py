@@ -50,29 +50,36 @@ def resolve_vault() -> Path:
     return resolver.validate_vault(str(matches[0]), "Obsidian registry")
 
 
-def frontmatter(path: Path) -> dict[str, str]:
+def frontmatter(path: Path) -> dict[str, str] | None:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
-        return {}
+        return None
     if not lines or lines[0].strip() != "---":
-        return {}
+        return None
 
     values: dict[str, str] = {}
     for line in lines[1:]:
         if line.strip() == "---":
-            break
+            return values
         if not line or line[0].isspace() or ":" not in line:
             continue
         key, value = line.split(":", 1)
         values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
+    return None
 
 
 def candidate_notes(notes_root: Path, project: str | None):
     if project:
-        if project in {".", ".."} or "/" in project or "\\" in project:
+        project_path = Path(project)
+        if (
+            project in {".", ".."}
+            or project_path.is_absolute()
+            or len(project_path.parts) != 1
+            or "/" in project
+            or "\\" in project
+        ):
             raise SystemExit(
                 "error: --project must be one exact Notes/<project> folder name"
             )
@@ -106,6 +113,7 @@ def main() -> None:
     )
     parser.add_argument("--project", help="exact Notes/<project> folder name")
     parser.add_argument("--status", default="requested", help="execution status")
+    parser.add_argument("--owner", help="exact execution owner identity")
     parser.add_argument("--json", action="store_true", help="emit a JSON array")
     args = parser.parse_args()
 
@@ -114,9 +122,17 @@ def main() -> None:
     results = []
     for path in candidate_notes(notes_root, args.project):
         properties = frontmatter(path)
+        if properties is None:
+            continue
+        if properties.get("type") != "investigation":
+            continue
+        if properties.get("status") != "active":
+            continue
         if properties.get("execution") != "nersc":
             continue
         if properties.get("execution_status") != args.status:
+            continue
+        if args.owner is not None and properties.get("execution_owner") != args.owner:
             continue
         results.append(
             {
