@@ -131,6 +131,28 @@ execution_status: requested
 ---
 EOF
 
+printf '%s\n' \
+  '---' \
+  'type: investigation' \
+  'status: active' \
+  'execution: nersc' \
+  'execution_status: requested' \
+  'tags:' \
+  $'\t- research/investigation' \
+  '---' \
+  >"${VAULT}/Notes/tsadar/tab-indented-list.md"
+
+cat >"${VAULT}/Notes/tsadar/mapping-list-item.md" <<'EOF'
+---
+type: investigation
+status: active
+execution: nersc
+execution_status: requested
+tags:
+  - key: value
+---
+EOF
+
 cat >"${VAULT}/Notes/tsadar/assigned-local.md" <<'EOF'
 ---
 type: investigation
@@ -177,7 +199,8 @@ printf '%s\n' "$output" | grep -Fq 'ready.md' \
 printf '%s\n' "$output" | grep -Fq 'ordinary.md' \
   && fail 'default listing included an ordinary investigation note'
 for rejected in wrong-type.md inactive.md malformed.md malformed-closed.md \
-    duplicate-key.md indented-required.md linked.md external.md; do
+    duplicate-key.md indented-required.md tab-indented-list.md mapping-list-item.md \
+    linked.md external.md; do
   printf '%s\n' "$output" | grep -Fq "$rejected" \
     && fail "default listing included rejected candidate: $rejected"
 done

@@ -67,10 +67,22 @@ def frontmatter(path: Path) -> dict[str, str] | None:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if line[0].isspace():
-            stripped = line.strip()
+            if "\t" in line or not line.startswith("  - "):
+                return None
             if nested_list_key not in {"tags", "owners", "repos"}:
                 return None
-            if not stripped.startswith("- ") or not stripped[2:].strip():
+            item = line[4:].strip()
+            if not item:
+                return None
+            if item.startswith(('"', "'")):
+                if len(item) < 2 or item[-1] != item[0]:
+                    return None
+            elif (
+                ": " in item
+                or item.endswith(":")
+                or item[0] in "[{!&*|>@`"
+                or item[-1] in "]}"
+            ):
                 return None
             continue
         if ":" not in line:
