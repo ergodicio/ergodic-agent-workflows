@@ -153,6 +153,33 @@ tags:
 ---
 EOF
 
+cat >"${VAULT}/Notes/tsadar/indented-opening-delimiter.md" <<'EOF'
+ ---
+type: investigation
+status: active
+execution: nersc
+execution_status: requested
+---
+EOF
+
+cat >"${VAULT}/Notes/tsadar/indented-closing-delimiter.md" <<'EOF'
+---
+type: investigation
+status: active
+execution: nersc
+execution_status: requested
+ ---
+EOF
+
+cat >"${VAULT}/Notes/tsadar/no-space-mapping.md" <<'EOF'
+---
+type:investigation
+status:active
+execution:nersc
+execution_status:requested
+---
+EOF
+
 cat >"${VAULT}/Notes/tsadar/assigned-local.md" <<'EOF'
 ---
 type: investigation
@@ -200,6 +227,7 @@ printf '%s\n' "$output" | grep -Fq 'ordinary.md' \
   && fail 'default listing included an ordinary investigation note'
 for rejected in wrong-type.md inactive.md malformed.md malformed-closed.md \
     duplicate-key.md indented-required.md tab-indented-list.md mapping-list-item.md \
+    indented-opening-delimiter.md indented-closing-delimiter.md no-space-mapping.md \
     linked.md external.md; do
   printf '%s\n' "$output" | grep -Fq "$rejected" \
     && fail "default listing included rejected candidate: $rejected"
