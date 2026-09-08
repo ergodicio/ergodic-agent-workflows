@@ -1,43 +1,40 @@
 ---
 name: research-notes
-description: Maintain append-only research notebooks with reproducible checkpoints and, when configured, mirror them to uniquely named notes in a shared Obsidian vault. Use for scientific simulations, experiments, numerical investigations, and multi-session research decisions; do not use for routine code maintenance with no research record.
+description: Maintain the research record in the shared Obsidian vault (Ergodic Research) — campaign hubs, append-only investigation notes with reproducible checkpoints, and the translation of archived notebooks — and, for repositories not yet migrated, append-only NOTES.md notebooks. Use for scientific simulations, experiments, numerical investigations, and multi-session research decisions; do not use for routine code maintenance with no research record.
 ---
 
 # Research Notes
 
-Treat the relevant `NOTES.md` as persistent research memory and an audit ledger, not as
-polished documentation or a transcript of agent activity. Preserve enough ground truth
-that a later researcher can reconstruct what was tried, why, what happened, and what
-changed next.
+The research record is persistent research memory and an audit ledger, not polished
+documentation or a transcript of agent activity. Preserve enough ground truth that a
+later researcher can reconstruct what was tried, why, what happened, and what changed
+next.
 
-The shared Obsidian vault is being evaluated as a cross-repository view of the same
-microscopic work. During this pilot, `NOTES.md` remains required and canonical. When the
-vault is available, mirror each material checkpoint there as well. Do not replace or
-weaken the repository record until the team explicitly ends the pilot.
+For `srs-campaign` the record is the shared Obsidian vault **Ergodic Research**
+(canonical since 2026-09-08). The repository keeps no parallel record: its `NOTES.md`
+files are frozen stubs that name the vault hub. Repositories not yet migrated
+(`kinetic-srs`, `lagradept-apps`, `adept-light-coupling`) stay on the `NOTES.md`
+convention in the last section until they are.
 
-## Find the notebook first
+## Vault workflow (migrated repositories)
 
-- Search only within the current repository or another bounded project root.
-- Prefer the most specific existing notebook: a campaign notebook beside its configs and
-  runners over a repository-wide notebook. Use a root notebook for work that spans
-  campaigns or has no narrower home. Do not duplicate the same entry at both levels.
-- Read the relevant notebook before substantive work. For a very large notebook, scan its
-  headings and tail first, then read the sections related to the current question.
-- A read-only status, explanation, or review request does not authorize a notes edit.
+Before the first research write in a task, run `scripts/resolve-shared-vault.py`
+(relative to this `SKILL.md`) and read
+[references/vault-protocol.md](references/vault-protocol.md) completely. In short:
 
-## Mirror to the shared vault during the pilot
-
-Before the first authorized research write in a task, run
-`scripts/resolve-shared-vault.py`, relative to this `SKILL.md`. It checks only explicit
-configuration and bounded Obsidian registry files; never recursively search for a vault.
-
-- If it resolves a vault, read [references/shared-vault-pilot.md](references/shared-vault-pilot.md)
-  completely and follow its dual-write protocol.
-- If it cannot resolve the vault, keep the required `NOTES.md` record, report that the
-  mirror was skipped and why, and do not block the research work or create another vault.
-- If the path resolves but the execution sandbox blocks the write, use the normal
-  approval path for that exact vault. If access remains unavailable, handle it as a
-  skipped mirror.
+- Read the study's **campaign hub** (`Notes/<project>/<study>/<study>.md`) first: status,
+  executions, USER quotes, trust caveats. If its log sections are still untranslated, read
+  the linked archive sections before relying on any number.
+- Record the work in a new **investigation note** in the study folder, from
+  `Templates/Investigation.md`, with `campaign: "[[<study>]]"`. Create the hub first (from
+  `Templates/Campaign.md`, established campaign name) when the study is new.
+- Append **checkpoints** with the `Checkpoint` template at pre-registration, submission,
+  and inspection; correct by appending; update the hub's *Status* in place and put
+  nothing else in the hub.
+- When you touch a study whose archives are `translated: false`, translate them per the
+  protocol's stage-2 rules.
+- If the vault cannot be resolved, keep the checkpoint text in the job's scratch
+  directory, report it, and do not append to a frozen `NOTES.md`.
 
 ## What belongs in the record
 
@@ -54,7 +51,7 @@ Append a checkpoint at a meaningful research boundary, including:
 
 Do not record routine tool narration, unsupported conclusions, large raw output that has a
 durable artifact location, or credentials. Never put a token, password, private key, or
-secret-bearing command in the notebook.
+secret-bearing command in the record.
 
 ## Preserve the epistemic boundary
 
@@ -66,66 +63,45 @@ secret-bearing command in the notebook.
 - Record the user's reasons, hypotheses, interpretations, and goals verbatim when they
   matter, labeled `USER (verbatim)`. Do not paraphrase them into an agent conclusion.
 - If the task explicitly requires analysis or hypothesis generation, keep proposed
-  explanations clearly separate from measured facts and do not put them in the durable
-  ledger as findings unless the user adopts them or a designed test establishes them.
+  explanations clearly separate from measured facts and label them (`SPECULATION`,
+  `CONJECTURE (USER)`); do not put them in the durable ledger as findings unless the user
+  adopts them or a designed test establishes them.
+- Mark untrusted numbers three ways (property, banner, point of use) as the protocol
+  describes.
 - Err on the side of recording relevant research information. During authorized research
-  work, do not ask whether to update `NOTES.md`; update it at the appropriate checkpoint.
+  work, do not ask whether to update the record; update it at the appropriate checkpoint.
 
-## Write append-only entries
+## Timing of checkpoints for a run or scan
 
-- Follow the notebook's established structure and level of detail.
-- Add each checkpoint as a complete block at the end of the file. For new notebooks, use a
-  short title and one sentence explaining their scope.
-- During the vault pilot, include the shared checkpoint ID and vault-relative note path in
-  each new repository checkpoint when a vault was resolved.
-- Use a locally correct timestamp in new top-level entries, preferably
-  `## YYYY-MM-DD — concise subject`. Preserve a notebook's established run numbering and
-  heading style; include local time and timezone when concurrent branches or same-day
-  entries need deterministic ordering.
-- Keep planned work visibly separate from measured results. Do not turn a submitted job
-  into a result or a hypothesis into a finding.
-- Correct an older claim by appending a timestamped correction that points back to it.
-  Never silently rewrite or delete the old research trail.
-- Update the notebook after obtaining a material result or reaching a decision, before the
-  context is lost. If authorized work ends at a real blocker, record the blocker and the
-  fact that no result was produced.
-
-For a run or scan, make the checkpoints at these times:
-
-1. **Before submission:** record run number and date, source and material dependency
-   commits, config, key differences from the previous run, and the user's reasons,
-   hypotheses, and goals verbatim. This is pre-registration, not retrospective narration.
-2. **Immediately after submission:** append the scheduler or allocation ID and the run or
+1. **Before submission:** run number and date, source and material dependency commits,
+   config, key differences from the previous run, and the user's reasons, hypotheses, and
+   goals verbatim. This is pre-registration, not retrospective narration.
+2. **Immediately after submission:** the scheduler or allocation ID and the run or
    experiment tracking ID as soon as each exists. Keep the state `LAUNCHED` or `PENDING`.
-3. **After inspection or completion:** append the actual status, relevant quantitative
+3. **After inspection or completion:** the actual status, relevant quantitative
    observations, failures, durable artifact locations, and any user interpretation.
 
-When the task authorizes implementation or execution, the associated notes update is part
-of that workflow. Do not create a commit, push, publish, or upload merely because the notes
+When the task authorizes implementation or execution, the record update is part of that
+workflow. Do not create a commit, push, publish, or upload merely because the record
 changed; those actions still require their normal authorization.
 
-## Make append-only notes merge safely
+## Repositories still on `NOTES.md`
 
-For repositories that track append-only notebooks, configure the root `.gitattributes` so
-both root and nested notebooks use Git's built-in union merge driver:
-
-```gitattributes
-NOTES.md merge=union
-**/NOTES.md merge=union
-```
-
-Use `scripts/enable-notes-merge.sh`, relative to this `SKILL.md`, to add the missing rules
-without replacing existing attributes. Do this when adopting the convention or creating
-the first tracked notebook. If the repository deliberately assigns another merge driver
-to notes, stop and report the conflict instead of overriding it.
-
-Union merge preserves both sides of an append conflict; timestamps do not themselves make
-Git resolve the conflict. Union merge is safe here only because prior entries are
-immutable. After a merge that touched notes, verify that each complete entry appears once,
-that no entry was interleaved or truncated, and that ordering is intelligible. Reorder
-whole entry blocks by timestamp when needed. Preserve conflicting scientific
-interpretations as separate evidence rather than choosing one during merge cleanup.
-
-If resolving a pre-existing conflict without the driver, keep every complete entry from
-both sides, order whole blocks by timestamp, and remove only exact duplicates. Never use a
-whole-file `ours` or `theirs` resolution for a research notebook.
+- Search only within the current repository or another bounded project root. Prefer the
+  most specific existing notebook: a campaign notebook beside its configs over a
+  repository-wide notebook. Read it before substantive work; for a very large notebook,
+  scan headings and tail first.
+- A read-only status, explanation, or review request does not authorize a notes edit.
+- Follow the notebook's established structure. Add each checkpoint as a complete block at
+  the end of the file, with a locally correct timestamp (`## YYYY-MM-DD — concise
+  subject`). Keep planned work visibly separate from measured results. Correct an older
+  claim by appending a timestamped correction; never rewrite the trail.
+- Configure the root `.gitattributes` so notebooks use Git's union merge driver
+  (`NOTES.md merge=union`, `**/NOTES.md merge=union`) with
+  `scripts/enable-notes-merge.sh`; refuse to override another driver. After a merge that
+  touched notes, verify each entry appears once, uninterleaved, in intelligible order;
+  never use a whole-file `ours`/`theirs` resolution for a research notebook.
+- Migrating a repository off `NOTES.md` is one-time, per-repository work: follow the
+  stage-1 / stage-2 protocol in `references/vault-protocol.md`. The tooling used for
+  `srs-campaign` lives in that repository (`utils/vault-migration/`) as a worked example,
+  not as a general tool.
