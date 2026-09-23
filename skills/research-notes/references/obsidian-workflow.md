@@ -28,6 +28,8 @@ authoritative for vault layout, frontmatter, and checkpoint formatting.
 
 - Put the note under `Notes/<repository-name>/`, using an existing project folder when its
   name clearly corresponds to the repository. Create that one bounded folder if missing.
+  In a project organised into campaign studies, the note goes in its study's subfolder;
+  see [vault-protocol.md](vault-protocol.md).
 - Use a globally unique filename. Prefer
   `YYYY-MM-DD-HHmmss-<person-or-agent>-<short-subject>-<uuid8>.md`.
 - Never use a shared project log as the write target. Parallel agents create separate
