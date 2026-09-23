@@ -9,6 +9,12 @@
 # *.ipynb_checkpoints, and uv.lock.
 # workdir/ holds run outputs + detached-launch logs on scratch. Keep it out of
 # the upload so local source syncs never overwrite remote run artifacts.
+#
+# A repo can add its own excludes in a .rsync-exclude file at its root (one
+# rsync pattern per line, comments with #). Use it to keep large local data
+# copies (downloaded sim outputs, viewer caches) off the cluster — a full
+# osiris-lpi sync was pushing ~50 GB of local_fields/ before this existed
+# (2026-08-20).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=config.sh
@@ -35,7 +41,14 @@ if [ -z "$REMOTE_SCRATCH" ]; then
     exit 1
 fi
 
+EXTRA_EXCLUDES=""
+if [ -f .rsync-exclude ]; then
+    EXTRA_EXCLUDES="--exclude-from=.rsync-exclude"
+    echo "[sync-up] using repo-local excludes from .rsync-exclude"
+fi
+
 rsync -avz \
+    ${EXTRA_EXCLUDES:+"$EXTRA_EXCLUDES"} \
     --exclude='__pycache__' \
     --exclude='.git/' \
     --exclude='.venv/' \

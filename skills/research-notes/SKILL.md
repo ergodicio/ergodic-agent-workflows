@@ -19,6 +19,12 @@ never recursively search for a vault.
 - If it resolves a vault, read
   [references/obsidian-workflow.md](references/obsidian-workflow.md) completely and follow
   it. Read the vault's live instructions and relevant project notes before acting.
+- If the project folder holds campaign hubs (currently `srs-campaign`), also read
+  [references/vault-protocol.md](references/vault-protocol.md) completely: campaign hubs,
+  investigation notes linked to them, frozen archives of former `NOTES.md` notebooks,
+  trust caveats, and archive translation.
+  [references/vault-transition-plan.md](references/vault-transition-plan.md) records how
+  `srs-campaign` was migrated.
 - If the path resolves but the execution sandbox blocks access, use the normal approval
   path for that exact vault.
 - If the vault cannot be resolved or accessed, report why and do not create another vault
