@@ -18,11 +18,18 @@ authoritative for vault layout, frontmatter, and checkpoint formatting.
 
 - Limit discovery to the vault's `Notes/<repository-name>/` project folder and directly
   linked notes. Never recursively search the whole vault.
-- Prefer notes whose repository, branch, campaign, run IDs, or subject match the current
-  work. Use timestamps and links to identify the newest relevant context.
-- Read enough of those notes to recover prior decisions, results, corrections, and open
-  questions before substantive work. Do not edit historical session notes merely to mark
-  them as read.
+- Use `python3 scripts/recall.py --project <project-folder> --query "<question>"`, relative
+  to the skill directory, to retrieve bounded evidence. See [recall.md](recall.md) for
+  output semantics and supported correction links. The project is the actual vault folder,
+  not an inferred alias or an unrestricted filesystem path.
+- Prefer matching repository, campaign, branch, run IDs, and subject. Read the cited
+  sections and their corrections to produce the context brief required by `SKILL.md`.
+  Timestamps help reconstruct order; they do not establish authority or comparable scope.
+- Preserve explicit missing evidence and conflicting results. A partial corpus or unresolved
+  correction link must not be treated as a complete history. Follow exact cross-project
+  links separately only when authorized; do not broaden into an unbounded vault search.
+- Verify live operational state against the authoritative service. Do not edit historical
+  session notes merely to mark them as read.
 
 ## Give each session a unique note
 
