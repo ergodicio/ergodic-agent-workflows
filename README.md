@@ -25,7 +25,7 @@ After installing this once, you can run Claude Code or Codex from any project re
 | `skills/nersc-workflow/` | Skill that handles the sync / launch / monitor / pull / cancel cycle on Perlmutter |
 | `skills/mlflow-query/` | Skill that queries the MLflow tracking server for experiments, runs, metrics, artifacts |
 | `skills/adept-run/` | Skill that picks the right way to run an adept simulation (default: `ergoExo` for full MLflow logging; `parsl` + `LocalProvider` for parameter scans) |
-| `skills/research-notes/` | Skill that maintains append-only research records as unique notes in the shared Obsidian vault, with bounded vault and project-context discovery |
+| `skills/research-notes/` | Skill that recovers cited project context with a bounded, read-only recall helper and maintains append-only research records in the shared Obsidian vault |
 | `scripts/ops/` | Thin wrappers around reviewed NERSC operations, including isolated interactive development sessions, allocation, sync, job monitoring, and MLflow artifact access. Bootstrap symlinks these to `~/.ergodic-agent-workflows/ops/`, an agent-neutral stable path |
 | `rules/nersc-agent-rules.md` | NERSC's [required coding-agent rules](https://docs.nersc.gov/development/coding-agents/) — bounded filesystem search, secrets handling, agent conduct on shared systems |
 | `scripts/install-agent-rules.sh` | Installs that block into `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, or both between managed markers (idempotent; backs up first) |
@@ -166,7 +166,21 @@ The skills don't know about each other directly — the agent composes them. Dur
 research campaign, `research-notes` treats the shared Obsidian vault as canonical. It
 recovers relevant project context, then appends durable checkpoints for launches,
 failures, findings, corrections, and decisions to a uniquely named investigation note.
-Its helper resolves the vault without an unbounded filesystem search.
+Its helpers resolve the vault without an unbounded filesystem search and retrieve
+source excerpts with explicit correction/supersession links:
+
+```bash
+python3 skills/research-notes/scripts/recall.py \
+  --project lagradept --query "Why did we choose derivative-free optimization?"
+python3 -m unittest discover -s tests -p 'test_research_recall*.py' -v
+```
+
+Recall uses Python's SQLite FTS5 in memory; it does not write a cache, copy vault data into
+this repo, or contact an external memory provider. See
+[the recall contract](skills/research-notes/references/recall.md) for source coordinates,
+partial-result warnings, opt-in real-vault tests, and fresh-agent evaluation. The existing
+Claude/Codex skill links include the helper. Hermes installation and automatic retrieval
+hooks remain separate deployment work; a repository change alone does not activate them.
 
 ---
 
