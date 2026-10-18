@@ -47,10 +47,13 @@ JSON output includes:
 - `scope_complete`: no eligible corpus was skipped within the requested project scan.
   Hidden paths and non-Markdown files are intentionally outside this scope.
 - `relations_complete`: the scanned corpus's explicit supported relation targets were
-  resolved and the retrieved relation closure fits in the output. It does NOT certify
-  semantic completeness, unlinked corrections, or corrections elsewhere in the vault.
-- `unresolved_links`, `warnings`, and their full counts. Each diagnostic list is capped at
-  50 entries; diagnostic text is shortened to 300 characters. Inspect sources when capped.
+  resolved within the construction budget and the retrieved relation closure fits in the
+  output. It does NOT certify semantic completeness, unlinked corrections, or corrections
+  elsewhere in the vault.
+- `unresolved_links`, `warnings`, and their counts before display truncation. When graph
+  construction stops early, these count only inspected targets, not unknown omissions.
+  Each diagnostic list is capped at 50 entries; diagnostic text is shortened to 300
+  characters. Inspect sources when capped.
 - `requires_live_verification` is always true: notes cannot establish today's scheduler,
   MLflow, or GitHub state. Nothing in this helper contacts those services.
 
@@ -67,7 +70,12 @@ Use the vault's live template. Its `Corrects` field supports, for example:
 - **Corrects:** [[older-note#20260101T000000Z-aaaaaaaa|original checkpoint]]
 - **Corrects:** [[#20260101T000000Z-aaaaaaaa]]
 - **Corrects:** 20260101T000000Z-aaaaaaaa
+- **Corrects:** [[older-note#20260101T000000Z-aaaaaaaa]], 20260102T000000Z-bbbbbbbb
 ```
+
+Wikilinks and bare checkpoint IDs can coexist in one field. Bare IDs are extracted only
+outside complete wikilinks, so anchors and aliases inside qualified links do not become
+additional global references. Repeated identical targets within one field are deduplicated.
 
 Note-level `supersedes` / `superseded-by` frontmatter supports inline wikilinks or a YAML
 list of wikilinks. Entire related notes are connected in this case. A heading anchor or
@@ -101,14 +109,24 @@ incomplete note is omitted rather than indexed as complete. Section dictionaries
 bounded during parsing across files, not built without limit and truncated afterward.
 Reaching either budget conservatively reports partial scope, even at an exact boundary.
 
+Relation construction has a separate 20,000-step budget, consumed by each target inspected
+and each edge insertion attempted (including duplicate edges). The check precedes edge
+allocation, bounding adjacency storage to at most 40,000 entries even for self-referential
+whole-note targets. Exhaustion stops construction and reports `partial`,
+`relations_complete: false`, and `output_truncated: true`; missing corrections cannot be
+ruled out. Closure traversal stops before adding a 41st evidence section instead of
+expanding every reachable section first. Omission warnings do not invent a total count
+for unvisited nodes.
+
 The total **excerpt text** budget is `--max-chars` (default 12,000, allowed 800–32,000),
 with at most 2,000 characters per excerpt. JSON metadata is additional. Limits are visible;
 a truncated correction chain is never labeled complete. Rerun with narrower query terms
 or inspect exact source paths rather than assuming omitted material is irrelevant.
 
 Each invocation rebuilds an in-memory FTS index from freshly read files, so edits and
-deletions cannot leave a stale disk index. No cache is synchronized into the vault and no
-second research ledger is created. Concurrent vault edits are not an atomic snapshot:
+deletions cannot leave a stale disk index. The SQLite connection is explicitly closed on
+both success and database errors; transaction context management alone does not close it.
+No cache is synchronized into the vault and no second research ledger is created. Concurrent vault edits are not an atomic snapshot:
 re-read cited records before decisions or costly execution.
 
 ## Tests and deployment boundary
@@ -128,6 +146,9 @@ checkpoint subheadings, supersession chains, ambiguity, byte/section bounds, fre
 stemmed-match source coordinates, missing evidence, and installed skill symlink paths.
 Temporary-directory tests deterministically replace directories/files at scan/open time,
 check descriptor cleanup, and verify fail-closed behavior without required OS primitives.
+Mixed-reference, adversarial graph/closure, and SQLite lifecycle regressions cover missing
+targets, duplicate edges, bounded allocation, and connection cleanup after index/query
+errors as well as success.
 Opt-in tests separately check existing LagrADEPT source
 notes for a decision, a failed attempt, and an unknown identifier; their expected sources
 are not passed to search. They may fail if that historical corpus is unavailable or moved.

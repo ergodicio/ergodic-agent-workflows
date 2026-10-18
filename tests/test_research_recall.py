@@ -472,5 +472,120 @@ class RecallTests(unittest.TestCase):
         self.assertEqual(item["note_status"], "blocked")
 
 
+    def test_mixed_correction_references_preserve_both_targets(self):
+        first = "20260101T000000Z-aaaaaaaa"
+        second = "20260102T000000Z-bbbbbbbb"
+        self.note("one.md", f"# First\n- **Checkpoint ID:** {first}\nFirstclaim.\n")
+        self.note("two.md", f"# Second\n- **Checkpoint ID:** {second}\nSecondclaim.\n")
+        # The ID inside the qualified wikilink must not become an ambiguous bare ID.
+        self.note("duplicate.md", f"# Duplicate\n- **Checkpoint ID:** {first}\nUnrelated.\n")
+        values = (f"[[one#{first}]], {second}",
+                  f"{second}; [[one#{first}|20260109T000000Z-alias]]",
+                  f"[[one#{first}]], {second}, {second}")
+        for value in values:
+            with self.subTest(value=value):
+                self.note("review.md", f"# Review\n- **Corrects:** {value}\nBoth claims withdrawn.\n")
+                for query in ("Firstclaim", "Secondclaim"):
+                    data = self.run_cli(query, "--limit", "1")
+                    self.assertTrue(data["relations_complete"], data["unresolved_links"])
+                    paths = [item["path"] for item in data["linked_evidence"]]
+                    self.assertIn("Notes/demo/review.md", paths)
+                    self.assertEqual(len(paths), len(set(paths)))
+
+    def test_mixed_missing_correction_target_reports_incomplete(self):
+        known = "20260101T000000Z-aaaaaaaa"
+        missing = "20260102T000000Z-bbbbbbbb"
+        self.note("one.md", f"# Claim\n- **Checkpoint ID:** {known}\nFirstclaim.\n")
+        self.note("review.md", f"# Review\n- **Corrects:** [[one#{known}]], {missing}\nWithdrawn.\n")
+        data = self.run_cli("Firstclaim", "--limit", "1")
+        self.assertFalse(data["relations_complete"])
+        self.assertEqual(data["status"], "partial")
+        self.assertEqual([item["target"] for item in data["unresolved_links"]], [missing])
+
+
+    def test_whole_note_relation_graph_is_bounded_during_construction(self):
+        text = "".join(f"## Section {i}\n- **Corrects:** [[study]]\n"
+                       f"{'Firstclaim' if i == 0 else 'Background'}.\n" for i in range(1000))
+        self.note("study.md", text)
+        original_graph = RECALL.relation_graph
+        allocated = []
+
+        def measured_graph(chunks):
+            result = original_graph(chunks)
+            allocated.append(sum(len(neighbors) for neighbors in result[0].values()))
+            return result
+
+        with mock.patch.object(RECALL, "relation_graph", measured_graph):
+            data = RECALL.recall(self.vault, "demo", "Firstclaim", 1)
+        self.assertLessEqual(allocated[0], 40000, "cap must apply before adjacency allocation")
+        self.assertEqual(data["status"], "partial")
+        self.assertFalse(data["relations_complete"])
+        self.assertTrue(any("relation construction" in w for w in data["warnings"]))
+
+    def test_relation_closure_stops_when_evidence_budget_is_full(self):
+        parts = []
+        for i in range(200):
+            parts.append(f"## Checkpoint {i}\n- **Checkpoint ID:** 20260101T000000Z-{i:08x}\n"
+                         f"{'Firstclaim' if i == 0 else 'Background'}.\n")
+            if i:
+                parts.append(f"- **Corrects:** 20260101T000000Z-{i - 1:08x}\n")
+        self.note("chain.md", "".join(parts))
+        original_graph = RECALL.relation_graph
+        visited = []
+
+        class MeasuredGraph(dict):
+            def __getitem__(self, key):
+                visited.append(key)
+                return super().__getitem__(key)
+
+        def measured_graph(chunks):
+            graph, *rest = original_graph(chunks)
+            return (MeasuredGraph(graph), *rest)
+
+        with mock.patch.object(RECALL, "relation_graph", measured_graph):
+            data = RECALL.recall(self.vault, "demo", "Firstclaim", 1)
+        self.assertLessEqual(len(visited), 40, "do not expand the full closure then truncate")
+        self.assertEqual(len(data["matches"]) + len(data["linked_evidence"]), 40)
+        self.assertFalse(data["relations_complete"])
+        self.assertTrue(data["output_truncated"])
+
+    def test_relation_work_budget_includes_duplicate_and_unresolved_targets(self):
+        for kind in ("duplicate", "unresolved"):
+            with self.subTest(kind=kind):
+                targets = ["study"] * 100 if kind == "duplicate" else [f"missing-{i}" for i in range(100)]
+                self.note("study.md", "# Study\nFirstclaim.\n" + "".join(
+                    f"- **Corrects:** [[{target}]]\n" for target in targets))
+                with mock.patch.object(RECALL, "MAX_RELATION_STEPS", 20, create=True):
+                    data = RECALL.recall(self.vault, "demo", "Firstclaim", 1)
+                self.assertTrue(any("relation construction" in w for w in data["warnings"]))
+                self.assertFalse(data["relations_complete"])
+                self.assertLessEqual(data["unresolved_link_count"], 20)
+
+
+    def test_sqlite_connection_closes_on_success_and_errors(self):
+        self.note("study.md", "# Study\nFirstclaim.\n")
+        sqlite = RECALL.sqlite3
+        for failure in (None, "CREATE VIRTUAL", "SELECT rowid"):
+            with self.subTest(failure=failure):
+                class FailingConnection(sqlite.Connection):
+                    def execute(self, sql, *args, **kwargs):
+                        if failure and sql.startswith(failure):
+                            raise sqlite.OperationalError("injected database failure")
+                        return super().execute(sql, *args, **kwargs)
+
+                connection = sqlite.connect(":memory:", factory=FailingConnection)
+                try:
+                    with mock.patch.object(sqlite, "connect", return_value=connection):
+                        if failure:
+                            with self.assertRaisesRegex(sqlite.OperationalError, "injected"):
+                                RECALL.recall(self.vault, "demo", "Firstclaim", 1)
+                        else:
+                            self.assertEqual(RECALL.recall(self.vault, "demo", "Firstclaim", 1)["status"], "ok")
+                    with self.assertRaisesRegex(sqlite.ProgrammingError, "closed"):
+                        connection.execute("SELECT 1")
+                finally:
+                    connection.close()
+
+
 if __name__ == "__main__":
     unittest.main()

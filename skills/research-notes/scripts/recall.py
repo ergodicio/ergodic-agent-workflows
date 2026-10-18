@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import os
 import stat
@@ -17,6 +17,8 @@ from uuid import uuid4
 
 STOP_WORDS = frozenset("a an and are as at be by did do does for from had has have how i in is it of on or our that the their this to was we were what when where which who why with would you choose".split())
 CHECKPOINT = re.compile(r"Checkpoint ID:\*\*\s*`?([\w-]+)", re.I)
+MAX_RELATION_STEPS = 20000
+MAX_EVIDENCE_SECTIONS = 40
 
 
 @contextmanager
@@ -189,16 +191,19 @@ def relation_fields(chunk: dict):
                 if not following.startswith((" ", "\t", "- ")):
                     break
                 value += " " + following
-        links = re.findall(r"\[\[([^\]]+)\]\]", value)
-        if not links:
-            links = re.findall(r"\b\d{8}T\d{6}Z-[\w-]+\b", value)
+        wiki_pattern = r"\[\[([^\]]+)\]\]"
+        links = re.findall(wiki_pattern, value)
+        # Parse bare IDs outside wikilinks as well; anchors/aliases inside a
+        # qualified link must not be reinterpreted as global checkpoint IDs.
+        remainder = re.sub(wiki_pattern, " ", value)
+        links.extend(re.findall(r"\b\d{8}T\d{6}Z-[\w-]+\b", remainder))
         if not links and value.strip().lower() not in {"", "none", "null", "[]", "n/a"}:
             links = [value.strip()]
-        for link in links:
+        for link in dict.fromkeys(links):
             yield link, in_frontmatter
 
 
-def relation_graph(chunks: list[dict]) -> tuple[dict, list[dict]]:
+def relation_graph(chunks: list[dict]) -> tuple[dict, list[dict], bool]:
     """Expand explicit relations, not generic wikilinks or chronological guesses."""
     graph = {i: set() for i in range(len(chunks))}
     unresolved, by_file, aliases, checkpoints = [], {}, {}, {}
@@ -212,12 +217,27 @@ def relation_graph(chunks: list[dict]) -> tuple[dict, list[dict]]:
         if chunk["checkpoint_id"]:
             checkpoints.setdefault(chunk["checkpoint_id"], []).append(i)
 
+    steps = 0
+
+    def spend():
+        nonlocal steps
+        if steps >= MAX_RELATION_STEPS:
+            return False
+        steps += 1
+        return True
+
     def connect(a, b):
+        # Count attempted expansion, including duplicate edges, before allocation.
+        if not spend():
+            return False
         graph[a].add(b)
         graph[b].add(a)
+        return True
 
     for i, chunk in enumerate(chunks):
         for link, whole_source_note in relation_fields(chunk):
+            if not spend():
+                return graph, unresolved, True
             target = link.split("|", 1)[0]
             if "#" in target:
                 note, anchor = target.split("#", 1)
@@ -241,10 +261,12 @@ def relation_graph(chunks: list[dict]) -> tuple[dict, list[dict]]:
                 continue
             if whole_source_note:
                 for j in by_file[chunk["path"]]:
-                    connect(i, j)
+                    if not connect(i, j):
+                        return graph, unresolved, True
             for j in candidates:
-                connect(i, j)
-    return graph, unresolved
+                if not connect(i, j):
+                    return graph, unresolved, True
+    return graph, unresolved, False
 
 
 def excerpt(chunk: dict, terms: list[str], budget: int, focus=None) -> dict:
@@ -275,7 +297,7 @@ def recall(vault: Path, project: str, query: str, limit: int,
             break
     scope_complete = not warnings
     terms = list(dict.fromkeys(word for word in re.findall(r"[^\W_]+", query.lower()) if word not in STOP_WORDS))
-    with sqlite3.connect(":memory:") as db:
+    with closing(sqlite3.connect(":memory:")) as db:
         db.execute("CREATE VIRTUAL TABLE notes USING fts5(body, tokenize='porter unicode61')")
         db.executemany("INSERT INTO notes(rowid, body) VALUES (?, ?)",
                        [(i + 1, chunk["excerpt"]) for i, chunk in enumerate(chunks)])
@@ -290,20 +312,26 @@ def recall(vault: Path, project: str, query: str, limit: int,
                           (marker, marker, expression, limit)).fetchall() if expression else []
     selected = [row[0] - 1 for row in rows]
     positions = {row[0] - 1: row[1] for row in rows}
-    graph, unresolved = relation_graph(chunks)
+    graph, unresolved, graph_limited = relation_graph(chunks)
+    if graph_limited:
+        warnings.append("relation construction budget reached; unprocessed targets may include corrections")
     seen = set(selected)
     queue = list(selected)
     linked = []
+    closure_limited = False
     for i in queue:
         for j in sorted(graph[i]):
             if j not in seen:
+                if len(queue) >= MAX_EVIDENCE_SECTIONS:
+                    closure_limited = True
+                    break
                 seen.add(j)
                 queue.append(j)
                 linked.append(j)
-    omitted = max(0, len(queue) - 40)
-    if omitted:
-        linked = linked[:40 - len(selected)]
-        warnings.append(f"evidence limit: omitted {omitted} linked sections; inspect sources before reusing claims")
+        if closure_limited:
+            break
+    if closure_limited:
+        warnings.append("evidence limit: additional linked sections omitted; inspect sources before reusing claims")
     budget = min(2000, max_chars // max(1, len(selected) + len(linked)))
     matches = [excerpt(chunks[i], terms, budget, positions[i]) for i in selected]
     evidence = [excerpt(chunks[i], terms, budget) for i in linked]
@@ -314,9 +342,9 @@ def recall(vault: Path, project: str, query: str, limit: int,
             "project": project, "query": query, "scope_complete": scope_complete,
             "notes_scanned": len(documents), "warnings": [w[:300] for w in warnings[:50]],
             "warning_count": len(warnings), "requires_live_verification": True,
-            "relations_complete": scope_complete and not (unresolved or omitted),
+            "relations_complete": scope_complete and not (unresolved or graph_limited or closure_limited),
             "unresolved_links": [{**item, "target": item["target"][:300]} for item in unresolved[:50]],
-            "unresolved_link_count": len(unresolved), "output_truncated": clipped or bool(omitted),
+            "unresolved_link_count": len(unresolved), "output_truncated": clipped or graph_limited or closure_limited,
             "matches": matches, "linked_evidence": evidence}
 
 
